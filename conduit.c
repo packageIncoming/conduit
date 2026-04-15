@@ -55,10 +55,31 @@ int main(int argc, char *argv[]){
         int clientFD = accept(socketFD,NULL,NULL);
         if (clientFD == -1){
             perror("accept");
-            close(socketFD);
             continue;
         }
+
+        // read from the client
+        char buff[4096];
+        if(read(clientFD,buff,256)<1){
+            // exit with 0 (client closed ) or -1 (error), close connection
+            close(clientFD);
+            continue;
+        }
+
+        // send the response ot the client
+        const char *response =
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: text/plain\r\n"
+            "Content-Length: 26\r\n"
+            "Connection: close\r\n"
+            "\r\n"
+            "Conduit is alive \xe2\x80\x94 TRD00";
+
+        write(clientFD, response, strlen(response));
+        close(clientFD);
     }
+    // close everything up:
+    close(socketFD);
 
 
 }
