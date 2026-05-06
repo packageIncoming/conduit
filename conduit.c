@@ -4,13 +4,23 @@
 #include <netinet/in.h>
 #include <string.h>
 #include <unistd.h>
+#include <stddef.h>
+
+typedef struct {
+    char method[8];
+    char path[32];
+    char version[8];
+    char  *header_keys[256];
+    char *header_values[256];
+    int header_count;
+
+} http_request_t;
 
 int main(int argc, char *argv[]){
     if (argc <2){
         fprintf(stderr,"Usage: ./conduit <port number>\n");
         exit(EXIT_FAILURE);
     }
-    printf("Hello world\n");
     int port = atoi(argv[1]);
     printf("Using port %i\n",port);
 
@@ -33,6 +43,8 @@ int main(int argc, char *argv[]){
     addr.sin_family = AF_INET;             // IPv4 (X.X.X.X) format
     addr.sin_addr.s_addr = INADDR_ANY;     // all interfaces
     addr.sin_port = htons(port);           // port, byte-swapped host to network 
+
+
 
 
     if (bind(socketFD,(struct sockaddr *)&addr, sizeof(addr)) == -1){   //bind here
@@ -60,11 +72,55 @@ int main(int argc, char *argv[]){
 
         // read from the client
         char buff[4096];
-        if(read(clientFD,buff,256)<1){
-            // exit with 0 (client closed ) or -1 (error), close connection
-            close(clientFD);
-            continue;
+        // clear the buffer
+        memset(buff,0,sizeof(buff));
+        int buffPtr=0; // where we are in the buffer 
+        ssize_t read_byte_count = read(clientFD,&buff[buffPtr],256); // read 256 bytes from clientFD into the buff
+        char *req_end_sentinel = "\r\n\r\n"; 
+        while (read_byte_count > 0){
+            // do stuff
+            printf("read %li bytes\n",read_byte_count);
+            printf("%.*s\n",(int)read_byte_count,buff+buffPtr);
+            
+            buffPtr+= read_byte_count;
+            // check if we now have the sentinel within our read buffer, if so we can end this reading
+            if (strstr(buff,req_end_sentinel)){
+                printf("sentinel received, ending read\n");
+                read_byte_count = -1;
+                break;
+                
+            } else {
+                read_byte_count = read(clientFD,&buff[buffPtr],256); // read 256 bytes from clientFD into the buff
+            }
+
         }
+        // null-terminate the buffer
+        buff[read_byte_count] = '\0';
+        // now we are done reading from the client, begin manipulating the buffer
+
+        // this http_request will store the parsed data from the raw reads that were stored in the buffer
+        http_request_t http_request;
+        memset(&http_request,0,sizeof(http_request));
+
+
+        // parse the buffer
+        char *delim = "\r\n"; // every line ends in \r\n
+        char *saveptr; // strtok_r needs a saveptr
+        
+        char *token = strtok_r(buff,delim,&saveptr);
+        // parse this first line uniquely
+        printf("%s is the request line and should be treated differently\n",token);
+        int header_count =0;
+        while(token != NULL){
+            //TODO Finish token consumption loop
+            token = strtok_r(buff,delim,&saveptr);
+
+        }
+
+
+
+
+        
 
         // send the response ot the client
         const char *response =
@@ -77,6 +133,7 @@ int main(int argc, char *argv[]){
 
         write(clientFD, response, strlen(response));
         close(clientFD);
+
     }
     // close everything up:
     close(socketFD);
