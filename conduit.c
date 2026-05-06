@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 200809L
 #include <stdio.h>
 #include <sys/socket.h>
 #include <stdlib.h>
@@ -5,11 +6,12 @@
 #include <string.h>
 #include <unistd.h>
 #include <stddef.h>
+#include <string.h>
 
 typedef struct {
-    char method[8];
-    char path[32];
-    char version[8];
+    char *method;
+    char *path;
+    char *version;
     char  *header_keys[256];
     char *header_values[256];
     int header_count;
@@ -79,13 +81,12 @@ int main(int argc, char *argv[]){
         char *req_end_sentinel = "\r\n\r\n"; 
         while (read_byte_count > 0){
             // do stuff
-            printf("read %li bytes\n",read_byte_count);
-            printf("%.*s\n",(int)read_byte_count,buff+buffPtr);
+            //printf("read %li bytes\n",read_byte_count);
+            //printf("%.*s\n",(int)read_byte_count,buff+buffPtr);
             
             buffPtr+= read_byte_count;
             // check if we now have the sentinel within our read buffer, if so we can end this reading
             if (strstr(buff,req_end_sentinel)){
-                printf("sentinel received, ending read\n");
                 read_byte_count = -1;
                 break;
                 
@@ -105,31 +106,104 @@ int main(int argc, char *argv[]){
 
         // parse the buffer
         char *delim = "\r\n"; // every line ends in \r\n
+        char *space_delim = " "; // every item 
         char *saveptr; // strtok_r needs a saveptr
         
-        char *token = strtok_r(buff,delim,&saveptr);
-        // parse this first line uniquely
-        printf("%s is the request line and should be treated differently\n",token);
-        int header_count =0;
-        while(token != NULL){
-            //TODO Finish token consumption loop
-            token = strtok_r(buff,delim,&saveptr);
+        // The first call to strtok_r is the only one that needs a reference to the original string (buff in this case)
+        char *request_line = (char *)strtok_r(buff,delim,&saveptr);
+        char *saveptr2;
 
+        // parse this first line uniquely
+        // 3 main sections, MTHD URI VER
+        char *method = strtok_r(request_line,space_delim,&saveptr2);
+        char *uri = strtok_r(NULL,space_delim,&saveptr2);
+        char *version = strtok_r(NULL,space_delim,&saveptr2);
+
+        int header_count =0;
+        char *token = strtok_r(NULL,delim,&saveptr);
+        char *token_delim = ": "; // deliminates between header key and header value
+
+        while(token != NULL){
+            char *saveptr3;
+
+            char *header_key = strtok_r(token,token_delim,&saveptr3);
+            char *header_value = strtok_r(NULL,token_delim,&saveptr3);
+            http_request.header_keys[header_count]=header_key;
+            http_request.header_values[header_count]=header_value;
+
+            // consume for next iteration            
+            token = strtok_r(NULL,delim,&saveptr); // subsequent calls don't need to include the original string
+            header_count++;
+        }
+
+
+
+        // now perform validations on the request
+        int status_code =200; // OK by default
+        // 1) Check if request line malformed
+        // 1a. are there missing fields
+        if (method == NULL || uri == NULL || version == NULL){
+            status_code = 400;
+        } else {
+            http_request.method=method;
+            http_request.path=uri;
+            http_request.version=version;
+        } 
+        // 1b. is it the wrong version
+        if (status_code == 200 && strcmp(http_request.version,"HTTP/1.1")!=0){
+            status_code=400;
+        }
+
+        // 2) Is it a non-GET request?
+        if (status_code == 200 && strcmp(http_request.method,"GET")!=0){
+            status_code = 405;
+        }
+
+        // 3) Is it routing to ANYTHING OTHER THAN '/'?
+        if (status_code == 200 && strcmp(http_request.path,"/")!=0){
+            status_code = 404;
         }
 
 
 
 
+
         
 
-        // send the response ot the client
-        const char *response =
-            "HTTP/1.1 200 OK\r\n"
-            "Content-Type: text/plain\r\n"
-            "Content-Length: 26\r\n"
-            "Connection: close\r\n"
-            "\r\n"
-            "Conduit is alive \xe2\x80\x94 TRD00";
+        // send the response to the client
+        // figure out the correct response based on status code
+        const char* response;
+        if (status_code == 200){
+            response =
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: text/plain\r\n"
+                "Content-Length: 26\r\n"
+                "Connection: close\r\n"
+                "\r\n"
+                "Conduit is alive \xe2\x80\x94 TRD00";
+        } else if(status_code == 404) {
+            response = 
+                "HTTP/1.1 404 Not Found\r\n"
+                "Content-Type: text/plain\r\n"
+                "Content-Length: 26\r\n"
+                "\r\n"
+                "Conduit is alive \xe2\x80\x94 TRD00";
+        } else if (status_code == 400) {
+            response = 
+                "HTTP/1.1 400 Bad Request\r\n"
+                "Content-Type: text/plain\r\n"
+                "Content-Length: 26\r\n"
+                "\r\n"
+                "Conduit is alive \xe2\x80\x94 TRD00";
+        } else if (status_code == 405){
+            response = 
+                "HTTP/1.1 405 Method Not Allowed\r\n"
+                "Content-Type: text/plain\r\n"
+                "Content-Length: 26\r\n"
+                "\r\n"
+                "Conduit is alive \xe2\x80\x94 TRD00";
+        }
+
 
         write(clientFD, response, strlen(response));
         close(clientFD);
