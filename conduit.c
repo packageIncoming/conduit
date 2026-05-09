@@ -9,11 +9,13 @@
 #include <string.h>
 
 typedef struct {
-    char *method;
-    char *path;
-    char *version;
-    char  *header_keys[256];
-    char *header_values[256];
+    char method[8];
+    char path[1024];
+    char version[16];
+    struct {
+        char key[256];
+        char value[512];
+    } headers[32]; // Creates a struct 'header' that has a 'key' and a 'value'. Initializes an array of 32 of these.
     int header_count;
 
 } http_request_t;
@@ -63,8 +65,6 @@ int main(int argc, char *argv[]){
     }
 
     while (1){
-        struct sockaddr_in clientAddr;
-        memset(&clientAddr, 0, sizeof(clientAddr));        // zero the struct, so clear out any garbage data
         
         int clientFD = accept(socketFD,NULL,NULL);
         if (clientFD == -1){
@@ -87,7 +87,6 @@ int main(int argc, char *argv[]){
             buffPtr+= read_byte_count;
             // check if we now have the sentinel within our read buffer, if so we can end this reading
             if (strstr(buff,req_end_sentinel)){
-                read_byte_count = -1;
                 break;
                 
             } else {
@@ -96,7 +95,7 @@ int main(int argc, char *argv[]){
 
         }
         // null-terminate the buffer
-        buff[read_byte_count] = '\0';
+        buff[buffPtr] = '\0';
         // now we are done reading from the client, begin manipulating the buffer
 
         // this http_request will store the parsed data from the raw reads that were stored in the buffer
@@ -104,50 +103,50 @@ int main(int argc, char *argv[]){
         memset(&http_request,0,sizeof(http_request));
 
 
-        // parse the buffer
-        char *delim = "\r\n"; // every line ends in \r\n
-        char *space_delim = " "; // every item 
-        char *saveptr; // strtok_r needs a saveptr
-        
-        // The first call to strtok_r is the only one that needs a reference to the original string (buff in this case)
-        char *request_line = (char *)strtok_r(buff,delim,&saveptr);
-        char *saveptr2;
+        // Begin parsing the buffer
+        char *CRLF = "\r\n"; // every line ends in \r\n
+        //char *space_CRLF = " "; // every item 
+        //char *saveptr; // strtok_r needs a saveptr
 
-        // parse this first line uniquely
-        // 3 main sections, MTHD URI VER
-        char *method = strtok_r(request_line,space_delim,&saveptr2);
-        char *uri = strtok_r(NULL,space_delim,&saveptr2);
-        char *version = strtok_r(NULL,space_delim,&saveptr2);
+        // 1. Parse out the request line
+        char *first_crlf = strstr(buff, CRLF);
 
-        int header_count =0;
-        char *token = strtok_r(NULL,delim,&saveptr);
-        char *token_delim = ": "; // deliminates between header key and header value
+        // set to \0, parse out vals
+        *first_crlf = '\0';
 
-        while(token != NULL){
-            char *saveptr3;
 
-            char *header_key = strtok_r(token,token_delim,&saveptr3);
-            char *header_value = strtok_r(NULL,token_delim,&saveptr3);
-            http_request.header_keys[header_count]=header_key;
-            http_request.header_values[header_count]=header_value;
+        int request_line_match_count  = sscanf(
+            buff,
+            "%7s %1023s %15s",
+            http_request.method,
+            http_request.path,
+            http_request.version
+            );
 
-            // consume for next iteration            
-            token = strtok_r(NULL,delim,&saveptr); // subsequent calls don't need to include the original string
-            header_count++;
+        if (request_line_match_count == 3){
+            // begin parsing out the headers
+            char *line_start = first_crlf+2;
+            char *line_end = strstr(line_start,CRLF);
+            int headerCount = 0;
+            while (line_end!= NULL){
+                int n = sscanf(
+                    line_start, 
+                    "%[^:]: %[^\r\n]", 
+                    http_request.headers[headerCount].key,
+                    http_request.headers[headerCount].value);
+                if (n != 2){ break;}
+                headerCount+=1;
+                line_start = line_end+2;
+                line_end = strstr(line_start,CRLF);
+            }
         }
-
-
 
         // now perform validations on the request
         int status_code =200; // OK by default
         // 1) Check if request line malformed
         // 1a. are there missing fields
-        if (method == NULL || uri == NULL || version == NULL){
+        if (request_line_match_count!=3){
             status_code = 400;
-        } else {
-            http_request.method=method;
-            http_request.path=uri;
-            http_request.version=version;
         } 
         // 1b. is it the wrong version
         if (status_code == 200 && strcmp(http_request.version,"HTTP/1.1")!=0){
