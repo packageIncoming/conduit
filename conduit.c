@@ -30,6 +30,7 @@ int main(int argc, char *argv[]){
     printf("Using port %i\n",port);
 
     char *docroot = argv[2];
+    printf("Docroot at %s\n",docroot);
 
     // Part 0: making and priming the socket
     int socketFD = socket(AF_INET, SOCK_STREAM, 0);                         // We are creating a TCP socket on IPv4 
