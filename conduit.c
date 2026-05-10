@@ -21,12 +21,15 @@ typedef struct {
 } http_request_t;
 
 int main(int argc, char *argv[]){
-    if (argc <2){
-        fprintf(stderr,"Usage: ./conduit <port number>\n");
+    if (argc <3){
+        fprintf(stderr,"Usage: ./conduit <port number> <docroot>\n");
         exit(EXIT_FAILURE);
     }
     int port = atoi(argv[1]);
     printf("Using port %i\n",port);
+
+    char *docroot = argv[2];
+    printf("Docroot at %s\n",docroot);
 
     // Part 0: making and priming the socket
     int socketFD = socket(AF_INET, SOCK_STREAM, 0);                         // We are creating a TCP socket on IPv4 
