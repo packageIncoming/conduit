@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <stddef.h>
 #include <string.h>
+#include "dochandler.h"
 
 typedef struct {
     char method[8];
@@ -21,12 +22,14 @@ typedef struct {
 } http_request_t;
 
 int main(int argc, char *argv[]){
-    if (argc <2){
-        fprintf(stderr,"Usage: ./conduit <port number>\n");
+    if (argc <3){
+        fprintf(stderr,"Usage: ./conduit <port number> <docroot>\n");
         exit(EXIT_FAILURE);
     }
     int port = atoi(argv[1]);
     printf("Using port %i\n",port);
+
+    char *docroot = argv[2];
 
     // Part 0: making and priming the socket
     int socketFD = socket(AF_INET, SOCK_STREAM, 0);                         // We are creating a TCP socket on IPv4 
@@ -143,6 +146,10 @@ int main(int argc, char *argv[]){
 
         // now perform validations on the request
         int status_code =200; // OK by default
+
+
+
+
         // 1) Check if request line malformed
         // 1a. are there missing fields
         if (request_line_match_count!=3){
