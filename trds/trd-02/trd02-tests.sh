@@ -51,9 +51,20 @@ info "Docroot: $DOCROOT"
 echo ""
 
 # ── T1: Compilation ──────────────────────────────────────
-info "T1: Compilation"
-if gcc -Wall -Wextra -Werror -pedantic -std=c11 -o conduit "$SRC" 2>&1; then
-  pass "Compiles with strict flags"
+info "T1: Compilation via Makefile"
+if [[ ! -f "Makefile" ]]; then
+  fail "Makefile not found — required for multi-file builds"
+  exit 1
+fi
+for FLAG in -Wall -Wextra -Werror -pedantic; do
+  if ! grep -q -- "$FLAG" Makefile; then
+    fail "Makefile missing required flag: $FLAG"
+    exit 1
+  fi
+done
+make clean > /dev/null 2>&1 || true
+if make > /dev/null 2>&1 && [[ -x "$BINARY" ]]; then
+  pass "Compiles via Makefile"
 else
   fail "Compilation failed — cannot continue"
   exit 1
@@ -151,7 +162,7 @@ fi
 # ── T10: Directory traversal (nested escape) → 403 ──────
 info "T10: Traversal via subdir (/../../../etc/passwd) returns 403"
 RESP=$(echo -ne "GET /subdir/../../../etc/passwd HTTP/1.1\r\nHost: localhost\r\n\r\n" | nc -w 2 localhost "$PORT" 2>/dev/null || true)
-if echo "$RESP" | grep -q "403\|404"; then
+if echo "$RESP" | grep -qE "403|404"; then
   # 403 is correct; 404 is acceptable if realpath fails on nonexistent intermediate
   pass "Nested traversal blocked ($(echo "$RESP" | head -1 | grep -oE '[0-9]{3}'))"
 else

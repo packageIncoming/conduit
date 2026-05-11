@@ -49,9 +49,20 @@ echo -e "${BOLD}═════════════════════�
 echo ""
 
 # ── T1: Compilation ──────────────────────────────────────
-info "T1: Compilation"
-if gcc -Wall -Wextra -Werror -pedantic -std=c11 -o conduit "$SRC" 2>&1; then
-  pass "Compiles with strict flags"
+info "T1: Compilation via Makefile"
+if [[ ! -f "Makefile" ]]; then
+  fail "Makefile not found — required for multi-file builds"
+  exit 1
+fi
+for FLAG in -Wall -Wextra -Werror -pedantic; do
+  if ! grep -q -- "$FLAG" Makefile; then
+    fail "Makefile missing required flag: $FLAG"
+    exit 1
+  fi
+done
+make clean > /dev/null 2>&1 || true
+if make > /dev/null 2>&1 && [[ -x "$BINARY" ]]; then
+  pass "Compiles via Makefile"
 else
   fail "Compilation failed — cannot continue"
   exit 1

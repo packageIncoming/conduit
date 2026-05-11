@@ -9,6 +9,7 @@
 #include <string.h>
 #include "dochandler.h"
 #include <fcntl.h>
+#include <errno.h>
 
 typedef struct {
     char method[8];
@@ -216,23 +217,69 @@ int main(int argc, char *argv[]){
 
         // 3. Verify the raw path leads to an actual file
         int fileFd = open(filepath,O_RDONLY);
-        
-
-
-           
-
-        
-
-        if (status_code == 200){
-            response =
-                "HTTP/1.1 200 OK\r\n"
+        if (fileFd == -1) {
+            // either missing permissions or DNE
+            status_code = 404;
+            response=
+                "HTTP/1.1 404 Not Found\r\n"
                 "Content-Type: text/plain\r\n"
                 "Content-Length: 26\r\n"
                 "Connection: close\r\n"
                 "\r\n"
                 "Conduit is alive \xe2\x80\x94 TRD00";
-        } 
-        write(clientFD, response, strlen(response));
+            write(clientFD, response, strlen(response));
+            close(clientFD);
+            continue;
+        }
+
+        // 4. Get the size of the file (if fail then return 500 ISE)
+        int filesize = get_file_size_from_fd(fileFd);
+        if (filesize == -1){
+            status_code = 500; // Internal Server error
+            response=
+                "HTTP/1.1 500 Internal Server Error\r\n"
+                "Content-Type: text/plain\r\n"
+                "Content-Length: 26\r\n"
+                "Connection: close\r\n"
+                "\r\n"
+                "Conduit is alive \xe2\x80\x94 TRD00";
+            write(clientFD, response, strlen(response));
+            close(clientFD);
+            continue;
+        }
+        
+        
+        // 5. Figure out MIME type
+        const char* mimetype = get_mime_from_filepath(filepath);
+        // create the buffer to hold file contents
+        char file_contents_buffer[filesize];
+        // 6. Read to buffer (if fail then return 500 ISE)
+        if (read_file_contents_to_buffer(fileFd,file_contents_buffer,filesize) == 1){
+            status_code = 500; // Internal Server error
+            response=
+                "HTTP/1.1 500 Internal Server Error\r\n"
+                "Content-Type: text/plain\r\n"
+                "Content-Length: 26\r\n"
+                "Connection: close\r\n"
+                "\r\n"
+                "Conduit is alive \xe2\x80\x94 TRD00";
+            write(clientFD, response, strlen(response));
+            close(clientFD);
+            continue;
+        }
+
+        // Construct the final correct response
+        char f_response[2048+filesize];
+        sprintf(f_response,
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: %s\r\n"
+            "Content-Length: %i\r\n"
+            "Connection: close\r\n"
+            "\r\n"
+            "%s",
+            mimetype,filesize,file_contents_buffer
+        );
+        write(clientFD, f_response, strlen(f_response));
         close(clientFD);
 
 

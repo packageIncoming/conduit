@@ -3,6 +3,19 @@
 #include <string.h>
 #include <stdio.h>
 #include <limits.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+const char* const HTML = "text/html";
+const char* const CSS = "text/css";
+const char* const JS = "application/javascript";
+const char* const TEXT = "text/plain";
+const char* const JPG = "text/jpeg";
+const char* const PNG = "text/png";
+const char* const UNKNOWN = "application/octet-stream";
+
+
 int construct_filepath(const char *docroot, const  char *request_uri, char* buffer, size_t buffer_size){
     char buff_temp[buffer_size];
     if (strcmp(request_uri,"/")==0){
@@ -35,4 +48,61 @@ int verify_path_starts_with_docroot(const char* docroot, const char* filepath){
         return 0; // found at the start
     }
     return 1; // Failed 
+}
+
+int get_file_size_from_fd(int fd){
+    struct stat sb;
+    if (fstat(fd,&sb) == -1){
+        return -1;
+    }
+    return sb.st_size;
+}
+
+const char*  get_mime_from_filepath(const char* filepath){
+    char* extension = strrchr(filepath,'.');
+
+    if (extension == NULL){
+        return UNKNOWN;
+    }
+    
+    if (strcmp(extension,".html")==0){
+        return HTML;
+    }
+    if (strcmp(extension,".css")==0){
+        return CSS;
+    }
+    if (strcmp(extension,".js")==0){
+        return JS;
+    }
+    if (strcmp(extension,".jpg")==0){
+        return JPG;
+    }
+    if (strcmp(extension,".png")==0){
+        return PNG;
+    }
+    if (strcmp(extension,".txt")==0){
+        return TEXT;
+    }
+    return UNKNOWN;
+}
+
+int read_file_contents_to_buffer(int fd, char* buffer, size_t buffer_size){
+    int read_bytes = 0;
+    int flag=0;
+    while (1){
+        int read_count = read(fd,buffer+read_bytes,buffer_size);
+        if (read_count == 0){
+            // reached EOF
+            break;
+        }
+        if (read_count == -1){
+            // error
+            flag=1;
+            break;
+        }
+        read_bytes += read_count;
+    }
+    buffer[read_bytes]='\0';
+
+    return flag;
 }

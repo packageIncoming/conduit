@@ -4,9 +4,9 @@
 #  Runs all regression tests from TRD-00 through the
 #  specified TRD level.
 #
-#  Usage: ./test-suite <trd-number> [source-file]
-#  Example: ./test-suite 3 ./conduit.c
-#           ./test-suite 5 ./src/conduit.c
+#  Usage: ./test-suite <trd-number>
+#  Example: ./test-suite 3
+#           ./test-suite 5
 # ═══════════════════════════════════════════════════════════
 set -euo pipefail
 
@@ -21,26 +21,21 @@ NC='\033[0m'
 
 # ── Usage ────────────────────────────────────────────────
 if [[ $# -lt 1 || "$1" == "-h" || "$1" == "--help" ]]; then
-  echo "Usage: ./test-suite <trd-number> [source-file]"
+  echo "Usage: ./test-suite <trd-number>"
   echo ""
   echo "  trd-number   0–7 (runs all tests from TRD-00 through TRD-N)"
-  echo "  source-file  path to conduit.c (default: ./conduit.c)"
+  echo "  Requires a Makefile that produces ./conduit"
   echo ""
   echo "Examples:"
-  echo "  ./test-suite 1              # test TRD-00 + TRD-01"
-  echo "  ./test-suite 5 src/main.c   # test TRD-00 through TRD-05"
+  echo "  ./test-suite 1    # test TRD-00 + TRD-01"
+  echo "  ./test-suite 5    # test TRD-00 through TRD-05"
   exit 0
 fi
 
 TRD_LEVEL="$1"
-SRC="${2:-./conduit.c}"
 
 if [[ "$TRD_LEVEL" -lt 0 || "$TRD_LEVEL" -gt 7 ]]; then
   echo "Error: TRD level must be 0–7"; exit 1
-fi
-
-if [[ ! -f "$SRC" ]]; then
-  echo "Error: source file not found: $SRC"; exit 1
 fi
 
 # ── State ────────────────────────────────────────────────
@@ -49,7 +44,7 @@ FAIL=0
 SKIP=0
 TOTAL=0
 PORT=$(( (RANDOM % 10000) + 20000 ))
-BINARY="./conduit_test_$$"
+BINARY="./conduit"
 SERVER_PID=""
 DOCROOT=""
 TMPOUT=""
@@ -65,7 +60,6 @@ cleanup() {
   fi
   [[ -n "$DOCROOT" ]] && { chmod -R u+rwX "$DOCROOT" 2>/dev/null || true; rm -rf "$DOCROOT"; }
   [[ -n "$TMPOUT" ]] && rm -rf "$TMPOUT"
-  [[ -f "$BINARY" ]] && rm -f "$BINARY"
 }
 trap cleanup EXIT
 
@@ -88,18 +82,31 @@ echo ""
 echo -e "${BOLD}═══════════════════════════════════════════════════════${NC}"
 echo -e "${BOLD}  Conduit Cumulative Test Runner${NC}"
 echo -e "${BOLD}  Testing: TRD-00 through TRD-$(printf '%02d' "$TRD_LEVEL")${NC}"
-echo -e "${BOLD}  Source:  $SRC${NC}"
 echo -e "${BOLD}  Port:    $PORT${NC}"
 echo -e "${BOLD}═══════════════════════════════════════════════════════${NC}"
 
-# ── Compile ──────────────────────────────────────────────
+# ── Compile via Makefile ─────────────────────────────────
 group "BUILD" "Compilation"
 
-FLAGS="-Wall -Wextra -Werror -pedantic -std=c11"
-if [[ "$TRD_LEVEL" -ge 5 ]]; then FLAGS="$FLAGS -pthread"; fi
+if [[ ! -f "Makefile" ]]; then
+  fail "Makefile not found — required for multi-file builds"
+  exit 1
+fi
 
-if gcc $FLAGS -o "$BINARY" "$SRC" 2>&1; then
-  pass "Compiled with: gcc $FLAGS"
+REQUIRED_FLAGS="-Wall -Wextra -Werror -pedantic"
+if [[ "$TRD_LEVEL" -ge 5 ]]; then
+  REQUIRED_FLAGS="$REQUIRED_FLAGS -pthread"
+fi
+for FLAG in $REQUIRED_FLAGS; do
+  if ! grep -q -- "$FLAG" Makefile; then
+    fail "Makefile missing required flag: $FLAG"
+    exit 1
+  fi
+done
+
+make clean > /dev/null 2>&1 || true
+if make > /dev/null 2>&1 && [[ -x "$BINARY" ]]; then
+  pass "Compiles via Makefile"
 else
   fail "Compilation failed — cannot continue"
   exit 1
@@ -242,13 +249,10 @@ fi
 
 # ═════════════════════════════════════════════════════════
 #  TRD-04: Epoll Event Loop
-#  NOTE: Background tasks run in subshells so that `wait`
-#  does not block on the server process.
 # ═════════════════════════════════════════════════════════
 if [[ "$TRD_LEVEL" -ge 4 ]]; then
   group "TRD-04" "Epoll Event Loop"
 
-  # 10 concurrent — subshell isolates wait from server
   (
     for i in $(seq 1 10); do
       curl -s -o /dev/null -w "%{http_code}" "http://localhost:$PORT/" > "$TMPOUT/c_$i" 2>/dev/null &
@@ -262,13 +266,11 @@ if [[ "$TRD_LEVEL" -ge 4 ]]; then
   done
   [[ "$C_OK" -eq 10 ]] && pass "10 concurrent → all 200" || fail "$C_OK/10 concurrent → 200"
 
-  # Large file
   EXPECTED_SZ=$(wc -c < "$DOCROOT/large.bin" | tr -d ' ')
   curl -s "http://localhost:$PORT/large.bin" -o "$TMPOUT/lg_dl" 2>/dev/null || true
   DL_SZ=$(wc -c < "$TMPOUT/lg_dl" 2>/dev/null | tr -d ' ')
   [[ "$DL_SZ" == "$EXPECTED_SZ" ]] && pass "Large file (256 KB) served correctly" || fail "Large file: expected=$EXPECTED_SZ got=$DL_SZ"
 
-  # Slow client doesn't block
   (echo -ne "GET / HTTP/1.1\r\n"; sleep 3; echo -ne "Host: localhost\r\n\r\n") | nc -w 5 localhost "$PORT" > /dev/null 2>&1 &
   SLOW_PID=$!
   sleep 0.3
@@ -276,7 +278,6 @@ if [[ "$TRD_LEVEL" -ge 4 ]]; then
   kill "$SLOW_PID" 2>/dev/null || true; wait "$SLOW_PID" 2>/dev/null || true
   [[ "$FAST" == "200" ]] && pass "Slow client doesn't block fast client" || fail "Fast client → $FAST (blocking?)"
 
-  # FD leak check
   if [[ -d "/proc/$SERVER_PID/fd" ]]; then
     FDB=$(ls "/proc/$SERVER_PID/fd" 2>/dev/null | wc -l)
     for i in $(seq 1 50); do curl -s -o /dev/null "http://localhost:$PORT/" 2>/dev/null || true; done
@@ -297,7 +298,6 @@ fi
 if [[ "$TRD_LEVEL" -ge 5 ]]; then
   group "TRD-05" "Thread Pool"
 
-  # 50 concurrent — subshell
   (
     for i in $(seq 1 50); do
       curl -s --max-time 5 -o /dev/null -w "%{http_code}" "http://localhost:$PORT/" > "$TMPOUT/c50_$i" 2>/dev/null &
@@ -311,7 +311,6 @@ if [[ "$TRD_LEVEL" -ge 5 ]]; then
   done
   [[ "$C50" -ge 45 ]] && pass "50 concurrent: $C50/50 → 200" || fail "$C50/50 concurrent"
 
-  # Mixed concurrent — subshell
   (
     curl -s -o /dev/null -w "%{http_code}" "http://localhost:$PORT/"     > "$TMPOUT/mx1" 2>/dev/null &
     curl -s -o /dev/null -w "%{http_code}" "http://localhost:$PORT/nope" > "$TMPOUT/mx2" 2>/dev/null &
@@ -324,7 +323,6 @@ if [[ "$TRD_LEVEL" -ge 5 ]]; then
   [[ "$MX1" == "200" && "$MX2" == "404" && "$MX3" == "405" ]] \
     && pass "Mixed concurrent: 200, 404, 405" || fail "Mixed: $MX1, $MX2, $MX3"
 
-  # 100 sequential
   S100=0
   for i in $(seq 1 100); do
     S=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:$PORT/" 2>/dev/null || echo "000")
@@ -341,13 +339,11 @@ fi
 if [[ "$TRD_LEVEL" -ge 6 ]]; then
   group "TRD-06" "Hardening"
 
-  # Oversized request
   HUGE=$(head -c 16000 /dev/zero | tr '\0' 'A')
   RESP=$(echo -ne "GET / HTTP/1.1\r\nHost: localhost\r\nX-Huge: ${HUGE}\r\n\r\n" | nc -w 2 localhost "$PORT" 2>/dev/null || true)
   echo "$RESP" | grep -q "400" && pass "Oversized request → 400" || fail "Oversized not rejected"
   assert_alive
 
-  # SIGPIPE resilience — subshell to isolate PIDs
   (
     for i in $(seq 1 10); do
       echo -ne "GET /large.bin HTTP/1.1\r\nHost: localhost\r\n\r\n" | \
@@ -362,7 +358,6 @@ if [[ "$TRD_LEVEL" -ge 6 ]]; then
   [[ "$STATUS" == "200" ]] && pass "Survived SIGPIPE (still serving)" || fail "SIGPIPE may have crashed server ($STATUS)"
   assert_alive
 
-  # Connect/disconnect storm — subshell
   (
     for i in $(seq 1 50); do
       nc -w 1 localhost "$PORT" < /dev/null > /dev/null 2>&1 &
@@ -373,7 +368,6 @@ if [[ "$TRD_LEVEL" -ge 6 ]]; then
   assert_alive
   pass "Survived 50 connect/disconnect"
 
-  # Malformed barrage (sequential — no subshell needed)
   for i in $(seq 1 10); do
     echo -ne "GARBAGE_$i\r\n\r\n" | nc -w 1 localhost "$PORT" > /dev/null 2>&1 || true
   done
