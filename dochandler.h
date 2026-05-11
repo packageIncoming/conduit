@@ -4,15 +4,13 @@
 
 
 //Construct a filesystem path from the document root and the request URI. GET / maps to <docroot>/index.html. All other paths map to <docroot> + path.
-char* construct_filepath(const char *docroot, const  char *request_uri);
+// Returns 0 if successful, 1 if not
+int construct_filepath(const char *docroot, const  char *request_uri, char* buffer, size_t buffer_size);
 
 // Resolve the constructed path with realpath(). 
-// Verify the resolved path begins with the document root prefix, 0 if yes 1 if not (fail)
+// Verify the resolved path begins with the document root prefix,
+// 0 if yes 1 if not (fail)
 int verify_path_starts_with_docroot(const char* docroot, const char* filepath);
-
-// Verify the file exists at that path. Returns 0 if exists, 1 if DNE
-int verify_file_exists(const char* filepath);
-
 
 // Given a file descriptor fd opened with open(), this method will get its size using fstat()
 int get_file_size_from_fd(int fd);

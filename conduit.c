@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include <string.h>
 #include "dochandler.h"
+#include <fcntl.h>
 
 typedef struct {
     char method[8];
@@ -147,10 +148,6 @@ int main(int argc, char *argv[]){
 
         // now perform validations on the request
         int status_code =200; // OK by default
-
-
-
-
         // 1) Check if request line malformed
         // 1a. are there missing fields
         if (request_line_match_count!=3){
@@ -160,26 +157,72 @@ int main(int argc, char *argv[]){
         if (status_code == 200 && strcmp(http_request.version,"HTTP/1.1")!=0){
             status_code=400;
         }
-
         // 2) Is it a non-GET request?
         if (status_code == 200 && strcmp(http_request.method,"GET")!=0){
             status_code = 405;
         }
 
-        // 3) Is it routing to ANYTHING OTHER THAN '/'?
-        if (status_code == 200 && strcmp(http_request.path,"/")!=0){
-            status_code = 404;
+        // If there is an error already, then we short-circuit and return the error response now:
+        const char* response;
+        if (status_code != 200){
+            if(status_code == 404) {
+                response = 
+                    "HTTP/1.1 404 Not Found\r\n"
+                    "Content-Type: text/plain\r\n"
+                    "Content-Length: 26\r\n"
+                    "\r\n"
+                    "Conduit is alive \xe2\x80\x94 TRD00";
+            } else if (status_code == 400) {
+                response = 
+                    "HTTP/1.1 400 Bad Request\r\n"
+                    "Content-Type: text/plain\r\n"
+                    "Content-Length: 26\r\n"
+                    "\r\n"
+                    "Conduit is alive \xe2\x80\x94 TRD00";
+            } else if (status_code == 405){
+                response = 
+                    "HTTP/1.1 405 Method Not Allowed\r\n"
+                    "Content-Type: text/plain\r\n"
+                    "Content-Length: 26\r\n"
+                    "\r\n"
+                    "Conduit is alive \xe2\x80\x94 TRD00";
+            }
+
+            write(clientFD, response, strlen(response));
+            close(clientFD);
+            continue;
         }
 
+        // Now begin to construct GET response
+        // 1. Construct raw path
+        int filepath_size=1024;
+        char filepath[filepath_size];
+        memset(filepath,0,filepath_size);
+        construct_filepath(docroot,http_request.path,filepath,filepath_size);
+        // 2. Verify the raw path starts with the docroot
+        if (verify_path_starts_with_docroot(docroot,filepath) == 1){
+            status_code = 403; // Forbidden
+            response=
+                "HTTP/1.1 403 Forbidden\r\n"
+                "Content-Type: text/plain\r\n"
+                "Content-Length: 26\r\n"
+                "Connection: close\r\n"
+                "\r\n"
+                "Conduit is alive \xe2\x80\x94 TRD00";
+            write(clientFD, response, strlen(response));
+            close(clientFD);
+            continue;
+        }
+
+        // 3. Verify the raw path leads to an actual file
+        int fileFd = open(filepath,O_RDONLY);
+        
 
 
-
+           
 
         
 
-        // send the response to the client
-        // figure out the correct response based on status code
-        const char* response;
         if (status_code == 200){
             response =
                 "HTTP/1.1 200 OK\r\n"
@@ -188,32 +231,10 @@ int main(int argc, char *argv[]){
                 "Connection: close\r\n"
                 "\r\n"
                 "Conduit is alive \xe2\x80\x94 TRD00";
-        } else if(status_code == 404) {
-            response = 
-                "HTTP/1.1 404 Not Found\r\n"
-                "Content-Type: text/plain\r\n"
-                "Content-Length: 26\r\n"
-                "\r\n"
-                "Conduit is alive \xe2\x80\x94 TRD00";
-        } else if (status_code == 400) {
-            response = 
-                "HTTP/1.1 400 Bad Request\r\n"
-                "Content-Type: text/plain\r\n"
-                "Content-Length: 26\r\n"
-                "\r\n"
-                "Conduit is alive \xe2\x80\x94 TRD00";
-        } else if (status_code == 405){
-            response = 
-                "HTTP/1.1 405 Method Not Allowed\r\n"
-                "Content-Type: text/plain\r\n"
-                "Content-Length: 26\r\n"
-                "\r\n"
-                "Conduit is alive \xe2\x80\x94 TRD00";
-        }
-
-
+        } 
         write(clientFD, response, strlen(response));
         close(clientFD);
+
 
     }
     // close everything up:
