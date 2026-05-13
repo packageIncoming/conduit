@@ -1,5 +1,6 @@
 #ifndef DOCHANDLER
 #define DOCHANDLER
+#include <stddef.h>
 
 // define the mime types
 extern const char* const HTML;

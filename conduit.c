@@ -7,9 +7,10 @@
 #include <unistd.h>
 #include <stddef.h>
 #include <string.h>
-#include "dochandler.h"
 #include <fcntl.h>
 #include <errno.h>
+#include "dochandler.h"
+#include "response.h"
 
 typedef struct {
     char method[8];
@@ -86,9 +87,6 @@ int main(int argc, char *argv[]){
         ssize_t read_byte_count = read(clientFD,&buff[buffPtr],256); // read 256 bytes from clientFD into the buff
         char *req_end_sentinel = "\r\n\r\n"; 
         while (read_byte_count > 0){
-            // do stuff
-            //printf("read %li bytes\n",read_byte_count);
-            //printf("%.*s\n",(int)read_byte_count,buff+buffPtr);
             
             buffPtr+= read_byte_count;
             // check if we now have the sentinel within our read buffer, if so we can end this reading
@@ -111,8 +109,6 @@ int main(int argc, char *argv[]){
 
         // Begin parsing the buffer
         char *CRLF = "\r\n"; // every line ends in \r\n
-        //char *space_CRLF = " "; // every item 
-        //char *saveptr; // strtok_r needs a saveptr
 
         // 1. Parse out the request line
         char *first_crlf = strstr(buff, CRLF);
@@ -147,52 +143,43 @@ int main(int argc, char *argv[]){
             }
         }
 
+
+
+        //-------------------RESPONSE CRAFTING-------------------//
+
+        http_response_t response_t;
+        memset(&response_t,0,sizeof(response_t));
+
+
+
         // now perform validations on the request
-        int status_code =200; // OK by default
         // 1) Check if request line malformed
-        // 1a. are there missing fields
-        if (request_line_match_count!=3){
-            status_code = 400;
+        // 1a. are there missing fields or is it the wrong HTTP version
+        if (request_line_match_count!=3 || strcmp(http_request.version,"HTTP/1.1")!=0){
+            response_add_header(&response_t,"Content-Type",TEXT);
+            response_add_header(&response_t,"Connection","close");
+
+            response_set_status(&response_t,400,REASON_BAD_REQUEST);
+            response_set_body(&response_t,response_t.reason_phrase,strlen(response_t.reason_phrase),0);
+            response_send(clientFD,&response_t);
+            response_clean(&response_t);
+            close(clientFD);
+            continue;
         } 
-        // 1b. is it the wrong version
-        if (status_code == 200 && strcmp(http_request.version,"HTTP/1.1")!=0){
-            status_code=400;
-        }
+
         // 2) Is it a non-GET request?
-        if (status_code == 200 && strcmp(http_request.method,"GET")!=0){
-            status_code = 405;
-        }
+        if (strcmp(http_request.method,"GET")!=0){
+            response_add_header(&response_t,"Content-Type",TEXT);
+            response_add_header(&response_t,"Connection","close");
 
-        // If there is an error already, then we short-circuit and return the error response now:
-        const char* response;
-        if (status_code != 200){
-            if(status_code == 404) {
-                response = 
-                    "HTTP/1.1 404 Not Found\r\n"
-                    "Content-Type: text/plain\r\n"
-                    "Content-Length: 26\r\n"
-                    "\r\n"
-                    "Conduit is alive \xe2\x80\x94 TRD00";
-            } else if (status_code == 400) {
-                response = 
-                    "HTTP/1.1 400 Bad Request\r\n"
-                    "Content-Type: text/plain\r\n"
-                    "Content-Length: 26\r\n"
-                    "\r\n"
-                    "Conduit is alive \xe2\x80\x94 TRD00";
-            } else if (status_code == 405){
-                response = 
-                    "HTTP/1.1 405 Method Not Allowed\r\n"
-                    "Content-Type: text/plain\r\n"
-                    "Content-Length: 26\r\n"
-                    "\r\n"
-                    "Conduit is alive \xe2\x80\x94 TRD00";
-            }
-
-            write(clientFD, response, strlen(response));
+            response_set_status(&response_t,405,REASON_METHOD_NOT_ALLOWED);
+            response_set_body(&response_t,response_t.reason_phrase,strlen(response_t.reason_phrase),0);
+            response_send(clientFD,&response_t);
+            response_clean(&response_t);
             close(clientFD);
             continue;
         }
+
 
         // Now begin to construct GET response
         // 1. Construct raw path
@@ -202,15 +189,13 @@ int main(int argc, char *argv[]){
         construct_filepath(docroot,http_request.path,filepath,filepath_size);
         // 2. Verify the raw path starts with the docroot
         if (verify_path_starts_with_docroot(docroot,filepath) == 1){
-            status_code = 403; // Forbidden
-            response=
-                "HTTP/1.1 403 Forbidden\r\n"
-                "Content-Type: text/plain\r\n"
-                "Content-Length: 26\r\n"
-                "Connection: close\r\n"
-                "\r\n"
-                "Conduit is alive \xe2\x80\x94 TRD00";
-            write(clientFD, response, strlen(response));
+            response_add_header(&response_t,"Content-Type",TEXT);
+            response_add_header(&response_t,"Connection","close");
+
+            response_set_status(&response_t,403,REASON_FORBIDDEN);
+            response_set_body(&response_t,response_t.reason_phrase,strlen(response_t.reason_phrase),0);
+            response_send(clientFD,&response_t);
+            response_clean(&response_t);
             close(clientFD);
             continue;
         }
@@ -219,15 +204,20 @@ int main(int argc, char *argv[]){
         int fileFd = open(filepath,O_RDONLY);
         if (fileFd == -1) {
             // either missing permissions or DNE
-            status_code = 404;
-            response=
-                "HTTP/1.1 404 Not Found\r\n"
-                "Content-Type: text/plain\r\n"
-                "Content-Length: 26\r\n"
-                "Connection: close\r\n"
-                "\r\n"
-                "Conduit is alive \xe2\x80\x94 TRD00";
-            write(clientFD, response, strlen(response));
+            response_add_header(&response_t,"Content-Type",TEXT);
+            response_add_header(&response_t,"Connection","close");
+
+
+            if (errno == EACCES){
+                // 403 Forbidden
+                response_set_status(&response_t,403,REASON_FORBIDDEN);
+            } else {
+                // 404 Not Found
+                response_set_status(&response_t,404,REASON_NOT_FOUND);
+            }
+            response_set_body(&response_t,response_t.reason_phrase,strlen(response_t.reason_phrase),0);
+            response_send(clientFD,&response_t);
+            response_clean(&response_t);
             close(clientFD);
             continue;
         }
@@ -235,15 +225,13 @@ int main(int argc, char *argv[]){
         // 4. Get the size of the file (if fail then return 500 ISE)
         int filesize = get_file_size_from_fd(fileFd);
         if (filesize == -1){
-            status_code = 500; // Internal Server error
-            response=
-                "HTTP/1.1 500 Internal Server Error\r\n"
-                "Content-Type: text/plain\r\n"
-                "Content-Length: 26\r\n"
-                "Connection: close\r\n"
-                "\r\n"
-                "Conduit is alive \xe2\x80\x94 TRD00";
-            write(clientFD, response, strlen(response));
+            response_add_header(&response_t,"Content-Type",TEXT);
+            response_add_header(&response_t,"Connection","close");
+
+            response_set_status(&response_t,500,REASON_INTERNAL_SERVER_ERROR);
+            response_set_body(&response_t,response_t.reason_phrase,strlen(response_t.reason_phrase),0);
+            response_send(clientFD,&response_t);
+            response_clean(&response_t);
             close(clientFD);
             continue;
         }
@@ -255,31 +243,25 @@ int main(int argc, char *argv[]){
         char file_contents_buffer[filesize];
         // 6. Read to buffer (if fail then return 500 ISE)
         if (read_file_contents_to_buffer(fileFd,file_contents_buffer,filesize) == 1){
-            status_code = 500; // Internal Server error
-            response=
-                "HTTP/1.1 500 Internal Server Error\r\n"
-                "Content-Type: text/plain\r\n"
-                "Content-Length: 26\r\n"
-                "Connection: close\r\n"
-                "\r\n"
-                "Conduit is alive \xe2\x80\x94 TRD00";
-            write(clientFD, response, strlen(response));
+            response_add_header(&response_t,"Content-Type",TEXT);
+            response_add_header(&response_t,"Connection","close");
+
+            response_set_status(&response_t,500,REASON_INTERNAL_SERVER_ERROR);
+            response_set_body(&response_t,response_t.reason_phrase,strlen(response_t.reason_phrase),0);
+            response_send(clientFD,&response_t);
+            response_clean(&response_t);
             close(clientFD);
             continue;
         }
 
-        // Construct the final correct response
-        char f_response[2048+filesize];
-        sprintf(f_response,
-            "HTTP/1.1 200 OK\r\n"
-            "Content-Type: %s\r\n"
-            "Content-Length: %i\r\n"
-            "Connection: close\r\n"
-            "\r\n"
-            "%s",
-            mimetype,filesize,file_contents_buffer
-        );
-        write(clientFD, f_response, strlen(f_response));
+
+        // Construct the final, successful response
+        response_add_header(&response_t,"Content-Type",mimetype);
+        response_add_header(&response_t,"Connection","close");
+        response_set_status(&response_t,200,REASON_OK);
+        response_set_body(&response_t,file_contents_buffer,filesize,0);
+        response_send(clientFD,&response_t);
+        response_clean(&response_t);
         close(clientFD);
 
 

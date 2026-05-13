@@ -1,4 +1,6 @@
 #define _XOPEN_SOURCE 500
+#include "dochandler.h"
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -42,11 +44,14 @@ int verify_path_starts_with_docroot(const char* docroot, const char* filepath){
     char* docroot_absolute_path = realpath(docroot,NULL);
     char* result = strstr(filepath,docroot_absolute_path);
     if (result == NULL){
+        free(docroot_absolute_path);
         return 1; // did not find
     }
     if (filepath - result == 0){
+        free(docroot_absolute_path);
         return 0; // found at the start
     }
+    free(docroot_absolute_path);
     return 1; // Failed 
 }
 

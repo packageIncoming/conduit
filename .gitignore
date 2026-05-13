@@ -1,2 +1,3 @@
 .vscode
 conduit
+*.o
