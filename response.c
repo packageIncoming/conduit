@@ -5,6 +5,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <unistd.h>
+#include "dochandler.h"
 
 const char* const REASON_INTERNAL_SERVER_ERROR = "Internal Server Error"; // 500
 const char* const REASON_NOT_FOUND = "Not Found"; // 404
@@ -78,4 +79,11 @@ int response_send(int fd, http_response_t *resp){
     // write to fd
     write(fd, final_response, strlen(final_response));
     return 0;
+}
+
+void response_fill_as_error(http_response_t *resp, int error_code, const char* reason){
+    response_add_header(resp,"Content-Type",TEXT);
+    response_add_header(resp,"Connection","close");
+    response_set_status(resp,error_code,reason);
+    response_set_body(resp,resp->reason_phrase,strlen(resp->reason_phrase),0);
 }

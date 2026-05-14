@@ -1,3 +1,5 @@
+#ifndef RESPONSE
+#define RESPONSE
 #include <stddef.h>
 #define HEADER_KEY_SIZE  256
 #define HEADER_VALUE_SIZE 512
@@ -30,8 +32,12 @@ void response_set_status(http_response_t *resp, int code, const char *reason);
 void response_add_header(http_response_t *resp, const char *key, const char *value);
 void response_set_body(http_response_t *resp, const char *body, int length, int owns_body);
 
+// Helper method for populating a response as an error. Errors follow the same format w/ differing code+reason
+void response_fill_as_error(http_response_t *resp, int error_code, const char* reason);
+
 /* One function serializes and sends */
 int response_send(int fd, http_response_t *resp);
 
 // Performs cleanup & memory freeing 
 void response_clean(http_response_t *resp);
+#endif

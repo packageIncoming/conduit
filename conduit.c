@@ -11,18 +11,9 @@
 #include <errno.h>
 #include "dochandler.h"
 #include "response.h"
+#include "request.h"
 
-typedef struct {
-    char method[8];
-    char path[1024];
-    char version[16];
-    struct {
-        char key[256];
-        char value[512];
-    } headers[32]; // Creates a struct 'header' that has a 'key' and a 'value'. Initializes an array of 32 of these.
-    int header_count;
 
-} http_request_t;
 
 int main(int argc, char *argv[]){
     if (argc <3){
@@ -79,101 +70,24 @@ int main(int argc, char *argv[]){
             continue;
         }
 
-        // read from the client
-        char buff[4096];
-        // clear the buffer
-        memset(buff,0,sizeof(buff));
-        int buffPtr=0; // where we are in the buffer 
-        ssize_t read_byte_count = read(clientFD,&buff[buffPtr],256); // read 256 bytes from clientFD into the buff
-        char *req_end_sentinel = "\r\n\r\n"; 
-        while (read_byte_count > 0){
-            
-            buffPtr+= read_byte_count;
-            // check if we now have the sentinel within our read buffer, if so we can end this reading
-            if (strstr(buff,req_end_sentinel)){
-                break;
-                
-            } else {
-                read_byte_count = read(clientFD,&buff[buffPtr],256); // read 256 bytes from clientFD into the buff
-            }
 
-        }
-        // null-terminate the buffer
-        buff[buffPtr] = '\0';
-        // now we are done reading from the client, begin manipulating the buffer
-
-        // this http_request will store the parsed data from the raw reads that were stored in the buffer
         http_request_t http_request;
         memset(&http_request,0,sizeof(http_request));
-
-
-        // Begin parsing the buffer
-        char *CRLF = "\r\n"; // every line ends in \r\n
-
-        // 1. Parse out the request line
-        char *first_crlf = strstr(buff, CRLF);
-
-        // set to \0, parse out vals
-        *first_crlf = '\0';
-
-
-        int request_line_match_count  = sscanf(
-            buff,
-            "%7s %1023s %15s",
-            http_request.method,
-            http_request.path,
-            http_request.version
-            );
-
-        if (request_line_match_count == 3){
-            // begin parsing out the headers
-            char *line_start = first_crlf+2;
-            char *line_end = strstr(line_start,CRLF);
-            int headerCount = 0;
-            while (line_end!= NULL){
-                int n = sscanf(
-                    line_start, 
-                    "%[^:]: %[^\r\n]", 
-                    http_request.headers[headerCount].key,
-                    http_request.headers[headerCount].value);
-                if (n != 2){ break;}
-                headerCount+=1;
-                line_start = line_end+2;
-                line_end = strstr(line_start,CRLF);
-            }
-        }
-
-
-
-        //-------------------RESPONSE CRAFTING-------------------//
 
         http_response_t response_t;
         memset(&response_t,0,sizeof(response_t));
 
-
-
-        // now perform validations on the request
-        // 1) Check if request line malformed
-        // 1a. are there missing fields or is it the wrong HTTP version
-        if (request_line_match_count!=3 || strcmp(http_request.version,"HTTP/1.1")!=0){
-            response_add_header(&response_t,"Content-Type",TEXT);
-            response_add_header(&response_t,"Connection","close");
-
-            response_set_status(&response_t,400,REASON_BAD_REQUEST);
-            response_set_body(&response_t,response_t.reason_phrase,strlen(response_t.reason_phrase),0);
+        if(request_populate_from_fd(clientFD,&http_request) == 1){
+            response_fill_as_error(&response_t,400,REASON_BAD_REQUEST);
             response_send(clientFD,&response_t);
             response_clean(&response_t);
             close(clientFD);
             continue;
-        } 
+        };
 
-        // 2) Is it a non-GET request?
+
         if (strcmp(http_request.method,"GET")!=0){
-            response_add_header(&response_t,"Content-Type",TEXT);
-            response_add_header(&response_t,"Connection","close");
-
-            response_set_status(&response_t,405,REASON_METHOD_NOT_ALLOWED);
-            response_set_body(&response_t,response_t.reason_phrase,strlen(response_t.reason_phrase),0);
+            response_fill_as_error(&response_t,405,REASON_METHOD_NOT_ALLOWED);
             response_send(clientFD,&response_t);
             response_clean(&response_t);
             close(clientFD);
@@ -189,11 +103,7 @@ int main(int argc, char *argv[]){
         construct_filepath(docroot,http_request.path,filepath,filepath_size);
         // 2. Verify the raw path starts with the docroot
         if (verify_path_starts_with_docroot(docroot,filepath) == 1){
-            response_add_header(&response_t,"Content-Type",TEXT);
-            response_add_header(&response_t,"Connection","close");
-
-            response_set_status(&response_t,403,REASON_FORBIDDEN);
-            response_set_body(&response_t,response_t.reason_phrase,strlen(response_t.reason_phrase),0);
+            response_fill_as_error(&response_t,403,REASON_FORBIDDEN);
             response_send(clientFD,&response_t);
             response_clean(&response_t);
             close(clientFD);
@@ -225,11 +135,8 @@ int main(int argc, char *argv[]){
         // 4. Get the size of the file (if fail then return 500 ISE)
         int filesize = get_file_size_from_fd(fileFd);
         if (filesize == -1){
-            response_add_header(&response_t,"Content-Type",TEXT);
-            response_add_header(&response_t,"Connection","close");
+            response_fill_as_error(&response_t,500,REASON_INTERNAL_SERVER_ERROR);
 
-            response_set_status(&response_t,500,REASON_INTERNAL_SERVER_ERROR);
-            response_set_body(&response_t,response_t.reason_phrase,strlen(response_t.reason_phrase),0);
             response_send(clientFD,&response_t);
             response_clean(&response_t);
             close(clientFD);
@@ -243,11 +150,7 @@ int main(int argc, char *argv[]){
         char file_contents_buffer[filesize];
         // 6. Read to buffer (if fail then return 500 ISE)
         if (read_file_contents_to_buffer(fileFd,file_contents_buffer,filesize) == 1){
-            response_add_header(&response_t,"Content-Type",TEXT);
-            response_add_header(&response_t,"Connection","close");
-
-            response_set_status(&response_t,500,REASON_INTERNAL_SERVER_ERROR);
-            response_set_body(&response_t,response_t.reason_phrase,strlen(response_t.reason_phrase),0);
+            response_fill_as_error(&response_t,500,REASON_INTERNAL_SERVER_ERROR);
             response_send(clientFD,&response_t);
             response_clean(&response_t);
             close(clientFD);
