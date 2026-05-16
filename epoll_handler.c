@@ -135,10 +135,12 @@ int connection_on_epollin(int fd,connection_t* conn,const char* docroot){
             response_fill_as_error(conn->response,400,REASON_BAD_REQUEST);
         } else {
             // maybe not malformed? Go through checks 
-            if (strcmp(conn->request->method,"GET")!=0){
+            if (strcmp(conn->request->method,"GET")!=0 ){
                 // Non-GET -> 405
                 response_fill_as_error(conn->response,405,REASON_METHOD_NOT_ALLOWED);
-            } else {
+            } else if ( strcmp(conn->request->version,"HTTP/1.1")!=0){
+                response_fill_as_error(conn->response,400,REASON_BAD_REQUEST);
+            }else {
                 // Request is structurally valid and a GET, begin making response
                 // first construct the actual http_response_t object
                 _connection_construct_response(conn,docroot);
