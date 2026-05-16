@@ -39,10 +39,11 @@ void response_set_body(http_response_t *resp, const char *body, int length, int 
 
 void response_clean(http_response_t *resp){
     if (resp->owns_body_flag==1){
-        free((void *)resp->body);
+        free((char *)resp->body);
     }
 }
 
+// DEPRECATED
 int response_send(int fd, http_response_t *resp){
     // calculate response size
     int response_size = resp->body_size + strlen(resp->reason_phrase) + HEADER_LINE_BYTES*resp->header_count + 18;

@@ -10,6 +10,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <sys/epoll.h>
+#include <inttypes.h>
 
 #include "dochandler.h"
 #include "response.h"
@@ -97,65 +98,51 @@ int main(int argc, char *argv[]){
                 // We are receiving new connection(s)
                 add_new_connections(epollFD,listenFD);
             } else {
-                connection_t* conn = (connection_t *)events[i].data.ptr;
+                connection_t* conn = events[i].data.ptr;
+
                 // We are handling some existing connection
-                if (events[i].events == EPOLLIN | EPOLLET) {
+                if (events[i].events & EPOLLIN ) {
                     // Reading from client
-                    if(connection_on_epollin(events[i].data.fd,events[i].data.ptr,docroot) ==1){
+                    if(connection_on_epollin(conn->fd,conn,docroot) ==1){
                         // Reading done, change to CONN_WRITING mode and change to EPOLLOUT
                         conn->status=CONN_WRITING;
-                        // Modify ev to have the values we want to update using
-                        ev.data.fd = conn->fd;
+                        // Modify ev to have the values we want to update 
                         ev.events = EPOLLOUT | EPOLLET;
+                        ev.data.ptr = conn;
                         if(epoll_ctl(epollFD,EPOLL_CTL_MOD,conn->fd,&ev)==-1){
+                            conn->status = CONN_DONE;
+                            ev.data.ptr = conn;
+                            epoll_ctl(epollFD,EPOLL_CTL_DEL,conn->fd,NULL);
+                            close(conn->fd);
+                            connection_free(conn);
                             perror("epoll_ctl: update CONN_READING->CONN_WRITING error");
                         }
-                    } 
-                } else if (events[i].events == EPOLLOUT | EPOLLET) {
+                    }
+                } else if (events[i].events & EPOLLOUT ) {
                     // Writing to client
-                    connection_on_epollout(events[i].data.fd,events[i].data.ptr);
+                    if(connection_on_epollout(conn->fd,conn) == 1){
+                        // Writing done, change to CONN_DONE and remove from epoll interest list
+                        conn->status = CONN_DONE;
+                        ev.data.ptr = conn;
+                        epoll_ctl(epollFD,EPOLL_CTL_DEL,conn->fd,NULL);
+                        close(conn->fd);
+                        connection_free(conn);
+                    }
                 } else {
                     // Either EPOLLERR or EPOLLHUP so just kill the connection and free the associated connection struct
-                    connection_free(events[i].data.ptr);
+                    conn->status = CONN_DONE;
+                    ev.data.ptr = conn;
+                    epoll_ctl(epollFD,EPOLL_CTL_DEL,conn->fd,NULL);
+                    close(conn->fd);
+                    connection_free(conn);
                 }
 
             }
         }
-        
-
-
-
-
-
-
-        
-        
-
-        // // create the buffer to hold file contents
-        // char file_contents_buffer[filesize];
-        // // 6. Read to buffer (if fail then return 500 ISE)
-        // if (read_file_contents_to_buffer(fileFd,file_contents_buffer,filesize) == 1){
-        //     response_fill_as_error(&response_t,500,REASON_INTERNAL_SERVER_ERROR);
-        //     response_send(clientFD,&response_t);
-        //     response_clean(&response_t);
-        //     close(clientFD);
-        //     continue;
-        // }
-
-
-        // // Construct the final, successful response
-        // response_add_header(&response_t,"Content-Type",mimetype);
-        // response_add_header(&response_t,"Connection","close");
-        // response_set_status(&response_t,200,REASON_OK);
-        // response_set_body(&response_t,file_contents_buffer,filesize,0);
-        // response_send(clientFD,&response_t);
-        // response_clean(&response_t);
-        // close(clientFD);
-
-
     }
     // close everything up:
     close(listenFD);
+    close(epollFD);
 
 
 }

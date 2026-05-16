@@ -1,6 +1,6 @@
+#include <stddef.h>
 #ifndef RESPONSE
 #define RESPONSE
-#include <stddef.h>
 #define HEADER_KEY_SIZE  256
 #define HEADER_VALUE_SIZE 512
 #define HEADER_LINE_BYTES (HEADER_KEY_SIZE+HEADER_VALUE_SIZE+4)
@@ -35,7 +35,7 @@ void response_set_body(http_response_t *resp, const char *body, int length, int 
 // Helper method for populating a response as an error. Errors follow the same format w/ differing code+reason
 void response_fill_as_error(http_response_t *resp, int error_code, const char* reason);
 
-/* One function serializes and sends */
+// DEPRECATED SINCE TRD04
 int response_send(int fd, http_response_t *resp);
 
 // Performs cleanup & memory freeing 

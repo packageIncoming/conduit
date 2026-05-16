@@ -13,8 +13,8 @@ const char* const HTML = "text/html";
 const char* const CSS = "text/css";
 const char* const JS = "application/javascript";
 const char* const TEXT = "text/plain";
-const char* const JPG = "text/jpeg";
-const char* const PNG = "text/png";
+const char* const JPG = "image/jpeg";
+const char* const PNG = "image/png";
 const char* const UNKNOWN = "application/octet-stream";
 
 
@@ -95,7 +95,7 @@ int read_file_contents_to_buffer(int fd, char* buffer, size_t buffer_size){
     int read_bytes = 0;
     int flag=0;
     while (1){
-        int read_count = read(fd,buffer+read_bytes,buffer_size);
+        int read_count = read(fd,buffer+read_bytes,buffer_size-read_bytes);
         if (read_count == 0){
             // reached EOF
             break;
