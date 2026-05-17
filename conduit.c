@@ -11,12 +11,32 @@
 #include <errno.h>
 #include <sys/epoll.h>
 #include <inttypes.h>
+#include <signal.h>
 
 #include "dochandler.h"
 #include "response.h"
 #include "request.h"
 #include "epoll_handler.h"
+#include "threadpool.h"
 
+int listenFD = -1;
+int epollFD = -1;
+threadpool_t* threadpool = NULL;
+
+void graceful_exit(){
+    if (listenFD!=-1){
+        close(listenFD);
+        listenFD=-1;
+    }
+    if (epollFD != -1){
+        close(epollFD);
+        epollFD = -1;
+    }
+    if (threadpool!=NULL){
+        threadpool_destroy(threadpool);
+        threadpool=NULL;    
+    }
+}
 
 
 int main(int argc, char *argv[]){
@@ -30,8 +50,24 @@ int main(int argc, char *argv[]){
     char *docroot = argv[2];
     printf("Docroot at %s\n",docroot);
 
+    struct sigaction sa;
+
+    // Clear the structure and set the handler function
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = &graceful_exit;
+
+    // Register SIGTERM/SIGINT to our handler
+    if (sigaction(SIGTERM, &sa, NULL) != 0) {
+        perror("Error binding SIGTERM handler");
+        return 1;
+    }
+    if (sigaction(SIGINT, &sa, NULL) != 0) {
+        perror("Error binding SIGINT handler");
+        return 1;
+    }
+
     // Part 0: making and priming the socket
-    int listenFD = socket(AF_INET, SOCK_STREAM, 0);                         // We are creating a TCP socket on IPv4 
+    listenFD = socket(AF_INET, SOCK_STREAM, 0);                         // We are creating a TCP socket on IPv4 
     if (listenFD < 0){
         perror("socket");
         exit(EXIT_FAILURE);
@@ -69,7 +105,7 @@ int main(int argc, char *argv[]){
     setnonblocking(listenFD);
 
     // Create epoll file descriptor
-    int epollFD = epoll_create1(0);
+    epollFD = epoll_create1(0);
     if (epollFD == -1){
         perror("epoll_create1");
         close(listenFD);
@@ -88,10 +124,25 @@ int main(int argc, char *argv[]){
     }
 
 
+    // Initialze threadpool
+    threadpool = threadpool_init(NUM_THREADS);
+
+
+    // Main loop
     while (1){
 
         // Get current number of events
         int n = epoll_wait(epollFD,events,MAXEVENTS,-1);
+
+        if (n <0){
+            if (errno == EINTR){
+                break;
+            }
+            else {
+                perror("epoll_wait");
+                break;
+            }
+        }
 
         for(int i=0;i<n;i++){
             if (events[i].data.fd == listenFD){
@@ -103,46 +154,43 @@ int main(int argc, char *argv[]){
                 // We are handling some existing connection
                 if (events[i].events & EPOLLIN ) {
                     // Reading from client
-                    if(connection_on_epollin(conn->fd,conn,docroot) ==1){
-                        // Reading done, change to CONN_WRITING mode and change to EPOLLOUT
+                    int result = connection_on_epollin(conn->fd,conn,docroot);
+                    if(result ==1){
+                        // Reading done, create task_t struct and enqueue
+                        task_t* task = calloc(1,sizeof(task_t));
+                        task->connection = conn;
                         conn->status=CONN_WRITING;
-                        // Modify ev to have the values we want to update 
-                        ev.events = EPOLLOUT | EPOLLET;
-                        ev.data.ptr = conn;
-                        if(epoll_ctl(epollFD,EPOLL_CTL_MOD,conn->fd,&ev)==-1){
-                            conn->status = CONN_DONE;
-                            ev.data.ptr = conn;
-                            epoll_ctl(epollFD,EPOLL_CTL_DEL,conn->fd,NULL);
-                            close(conn->fd);
-                            connection_free(conn);
-                            perror("epoll_ctl: update CONN_READING->CONN_WRITING error");
+                        pthread_mutex_lock(&threadpool->mutex);
+                        threadpool_enqueue(threadpool,task);
+                        pthread_mutex_unlock(&threadpool->mutex);
+
+                        // Remove the fd from the epoll since now the worker owns that connection
+                        if (epoll_ctl(epollFD,EPOLL_CTL_DEL,conn->fd,NULL) == -1){
+                            perror("epoll_ctl: request parse done");
                         }
-                    }
-                } else if (events[i].events & EPOLLOUT ) {
-                    // Writing to client
-                    if(connection_on_epollout(conn->fd,conn) == 1){
-                        // Writing done, change to CONN_DONE and remove from epoll interest list
+
+                    } else if (result == -1){
+                        // Error occurred
                         conn->status = CONN_DONE;
                         ev.data.ptr = conn;
                         epoll_ctl(epollFD,EPOLL_CTL_DEL,conn->fd,NULL);
                         close(conn->fd);
                         connection_free(conn);
-                    }
+                    } 
                 } else {
                     // Either EPOLLERR or EPOLLHUP so just kill the connection and free the associated connection struct
                     conn->status = CONN_DONE;
                     ev.data.ptr = conn;
                     epoll_ctl(epollFD,EPOLL_CTL_DEL,conn->fd,NULL);
                     close(conn->fd);
-                    connection_free(conn);
+                    connection_free(conn); 
                 }
-
             }
         }
     }
     // close everything up:
-    close(listenFD);
-    close(epollFD);
+    graceful_exit(0);
+    exit(0);
 
 
 }

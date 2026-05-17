@@ -1,9 +1,9 @@
 CC= gcc
-FLAGS = -g -Wall -Wextra -Werror -pedantic -std=c11
+FLAGS = -g -Wall -Wextra -Werror -pedantic -std=c11 -pthread
 
 
-conduit:dochandler.o response.o request.o epoll_handler.o
-	$(CC) $(FLAGS) conduit.c dochandler.o  response.o request.o epoll_handler.o -o conduit
+conduit:dochandler.o response.o request.o epoll_handler.o threadpool.o
+	$(CC) $(FLAGS) conduit.c dochandler.o  response.o request.o epoll_handler.o threadpool.o -o conduit
 
 dochandler.o:
 	$(CC) $(FLAGS) -c dochandler.c  -o dochandler.o
@@ -17,6 +17,9 @@ request.o:
 
 epoll_handler.o:
 	$(CC) $(FLAGS) -c epoll_handler.c  -o epoll_handler.o
+
+threadpool.o:
+	$(CC) $(FLAGS) -c threadpool.c  -o threadpool.o
 
 .PHONY: clean
 clean:

@@ -23,6 +23,7 @@ void connection_free(connection_t* connection){
     free(connection->write_buffer);
     free(connection->request);
     response_clean(connection->response);
+    free(connection->response);
     free(connection);
 }
 
@@ -65,9 +66,10 @@ void add_new_connections(int epollFD, int listenFD){
 int _connection_read_to_buffer(int fd, connection_t* conn){
     // read from the client
     while (1){
-        ssize_t read_byte_count = read(fd,&(conn->read_buffer[conn->rb_offset]),256); // read 256 bytes from clientFD into the buff
+        ssize_t read_byte_count = read(fd,&(conn->read_buffer[conn->rb_offset]),sizeof(conn->read_buffer)-conn->rb_offset); // read 256 bytes from clientFD into the buff
         if (read_byte_count == -1){
-            break;
+            if( errno == EAGAIN){ break;}
+            return -1; // Unexpected error
         }
         conn->rb_offset+= read_byte_count;
     }
@@ -124,9 +126,13 @@ int connection_on_epollin(int fd,connection_t* conn,const char* docroot){
         fprintf(stderr,"WARNING: TRYING TO READ FROM CONNECTION WITH STATUS != CONN_READING\n");
         return -1;
     }
-    if(_connection_read_to_buffer(fd,conn) == 0){
+    int result = _connection_read_to_buffer(fd,conn);
+    if(result== 0){
         // did not find \r\n\r\n
         return 0;
+    } else if (result == -1){
+        perror("unexpected error when reading to buffer");
+        return -1; // Unexpected Error
     } else{
         // did find \r\n\r\n implies reading is done
         // create http_request_t struct
@@ -271,7 +277,11 @@ int _connection_write_to_client(int fd, connection_t* conn){
         }
         ssize_t write_byte_count = write(fd,&(conn->write_buffer[conn->wb_offset]),conn->wb_size-conn->wb_offset); // read 256 bytes from clientFD into the buff
         if (write_byte_count == -1){
-            return 0;
+            if (errno == EAGAIN) {
+                return 0;
+            } else {
+                return -1; // Unexpected Error
+            }
         }
         conn->wb_offset+= write_byte_count;
     }
