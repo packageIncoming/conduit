@@ -43,6 +43,7 @@ threadpool_t* threadpool_init(int num_threads){
     threadpool_t* threadpool = calloc(1,sizeof(threadpool_t));
     threadpool->threads = calloc(num_threads, sizeof(pthread_t));
     threadpool->shutdown=0;
+    threadpool->active_connections =0;
     threadpool->num_threads = num_threads;
 
     // inits

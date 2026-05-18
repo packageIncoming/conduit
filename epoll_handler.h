@@ -3,6 +3,7 @@
 #ifndef EPOLL_HANDLER
 #define EPOLL_HANDLER
 #define MAXEVENTS 100
+#define READBUFFER_SIZE 8192
 
 
 
@@ -17,8 +18,8 @@ typedef struct {
     int rb_offset;
     http_request_t* request;
     http_response_t* response;
-    char read_buffer[8192];
-} connection_t;
+    char read_buffer[READBUFFER_SIZE];
+} connection_t; 
 
 
 // Sets a file descriptor to be nonblocking using fcntl(fd, F_SETFL, flags | O_NONBLOCK)

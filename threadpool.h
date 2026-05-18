@@ -25,6 +25,7 @@ typedef struct{
     pthread_cond_t cond;
     pthread_t* threads;
     int shutdown;
+    int active_connections;
     task_list_t* task_list ;
 
 } threadpool_t;

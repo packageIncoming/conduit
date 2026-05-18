@@ -50,6 +50,8 @@ int main(int argc, char *argv[]){
     char *docroot = argv[2];
     printf("Docroot at %s\n",docroot);
 
+    signal(SIGPIPE, SIG_IGN); // Prevent server crash on write to closed socket
+
     struct sigaction sa;
 
     // Clear the structure and set the handler function

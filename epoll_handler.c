@@ -66,17 +66,28 @@ void add_new_connections(int epollFD, int listenFD){
 int _connection_read_to_buffer(int fd, connection_t* conn){
     // read from the client
     while (1){
-        ssize_t read_byte_count = read(fd,&(conn->read_buffer[conn->rb_offset]),sizeof(conn->read_buffer)-conn->rb_offset); // read 256 bytes from clientFD into the buff
+        size_t remaining = READBUFFER_SIZE - conn->rb_offset - 1;
+        if (remaining == 0){
+            return -1;
+        }
+        ssize_t read_byte_count = read(fd,&(conn->read_buffer[conn->rb_offset]),remaining); // read 256 bytes from clientFD into the buff
         if (read_byte_count == -1){
             if( errno == EAGAIN){ break;}
             return -1; // Unexpected error
+        } else if (read_byte_count == 0){
+            break;
         }
         conn->rb_offset+= read_byte_count;
     }
-
     // null-terminate the buffer
+
     conn->read_buffer[conn->rb_offset] = '\0';
-    char *first_crlf = strstr(conn->read_buffer, CRLF);
+    if (conn->rb_offset == READBUFFER_SIZE-1 ){
+        return -1; // Too large of a request
+    }
+    char *first_crlf = strstr(conn->read_buffer, "\r\n\r\n");
+    
+
     if (first_crlf == NULL){
         // We have not yet finished reading, return 0
         return 0;
@@ -131,8 +142,16 @@ int connection_on_epollin(int fd,connection_t* conn,const char* docroot){
         // did not find \r\n\r\n
         return 0;
     } else if (result == -1){
-        perror("unexpected error when reading to buffer");
-        return -1; // Unexpected Error
+        if (conn->rb_offset >= READBUFFER_SIZE-1){
+            // Too big of a request, construct response and send
+            response_fill_as_error(conn->response,400,REASON_BAD_REQUEST);
+            response_set_body(conn->response,"Request too large",17,0);
+            _connection_serialize_response(conn);
+        } else {
+            // Unexpected Error
+            response_fill_as_error(conn->response,500,REASON_INTERNAL_SERVER_ERROR);
+        }
+        return 1; 
     } else{
         // did find \r\n\r\n implies reading is done
         // create http_request_t struct
