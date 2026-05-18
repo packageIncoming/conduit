@@ -101,7 +101,6 @@ fi
 info "T4: Oversized request headers (>8 KB) → 400"
 HUGE_VAL=$(head -c 16000 /dev/zero | tr '\0' 'A')
 RESP=$(echo -ne "GET / HTTP/1.1\r\nHost: localhost\r\nX-Huge: ${HUGE_VAL}\r\n\r\n" | nc -w 2 localhost "$PORT" 2>/dev/null || true)
-echo "$RESP was the response"
 if echo "$RESP" | grep -q "400"; then
   pass "Oversized request → 400"
 else
