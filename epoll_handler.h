@@ -1,14 +1,16 @@
+#pragma once
 #include "request.h"
 #include "response.h"
 #ifndef EPOLL_HANDLER
 #define EPOLL_HANDLER
 #define MAXEVENTS 100
 #define READBUFFER_SIZE 8192
-
+#define TIMEOUT_SECONDS 30
 
 
 enum CONN_STATUS {CONN_READING, CONN_WRITING, CONN_DONE};
 
+typedef struct threadpool threadpool_t; 
 typedef struct {
     int fd;
     enum CONN_STATUS status ;
@@ -16,6 +18,7 @@ typedef struct {
     size_t wb_size;
     int wb_offset;
     int rb_offset;
+    time_t last_active;
     http_request_t* request;
     http_response_t* response;
     char read_buffer[READBUFFER_SIZE];
@@ -30,7 +33,7 @@ void connection_free(connection_t* connection);
 
 // Adds new connections to the associated epoll instance until accept() returns -1 (EAGAIN)
 // Adds with flags EPOLLIN | EPOLLET
-void add_new_connections(int epollFD, int listenFD);
+void add_new_connections(int epollFD, int listenFD,threadpool_t* threadpool);
 
 
 // --------------------- EPOLLIN-BASED METHODS --------------------- //

@@ -28,12 +28,16 @@ void* thread_routine(void* arg){
         }
         // Dequeue task if not shutting down 
         task_t* task = threadpool_dequeue(threadpool);
+        threadpool->active_connections+=1;
         pthread_mutex_unlock(&threadpool->mutex);
         
         connection_on_epollout(task->connection->fd,task->connection);
         close(task->connection->fd);
         connection_free(task->connection);
         free(task);
+        pthread_mutex_lock(&threadpool->mutex);
+        threadpool->active_connections-=1;
+        pthread_mutex_unlock(&threadpool->mutex);
     }
     return (void*) 0;
 }

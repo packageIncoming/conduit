@@ -12,6 +12,7 @@
 #include <sys/epoll.h>
 #include <inttypes.h>
 #include <signal.h>
+#include <time.h>
 
 #include "dochandler.h"
 #include "response.h"
@@ -19,23 +20,10 @@
 #include "epoll_handler.h"
 #include "threadpool.h"
 
-int listenFD = -1;
-int epollFD = -1;
-threadpool_t* threadpool = NULL;
+volatile sig_atomic_t ACTIVE=1;
 
 void graceful_exit(){
-    if (listenFD!=-1){
-        close(listenFD);
-        listenFD=-1;
-    }
-    if (epollFD != -1){
-        close(epollFD);
-        epollFD = -1;
-    }
-    if (threadpool!=NULL){
-        threadpool_destroy(threadpool);
-        threadpool=NULL;    
-    }
+    ACTIVE=0;
 }
 
 
@@ -69,7 +57,7 @@ int main(int argc, char *argv[]){
     }
 
     // Part 0: making and priming the socket
-    listenFD = socket(AF_INET, SOCK_STREAM, 0);                         // We are creating a TCP socket on IPv4 
+    int listenFD = socket(AF_INET, SOCK_STREAM, 0);                         // We are creating a TCP socket on IPv4 
     if (listenFD < 0){
         perror("socket");
         exit(EXIT_FAILURE);
@@ -98,7 +86,7 @@ int main(int argc, char *argv[]){
     }
 
     // now listen on that socket and forever accept connections
-    if(listen(listenFD,128) == -1){  // listen on listenFD with 128 conn backlog
+    if(listen(listenFD,MAX_CONNECTIONS) == -1){  // listen on listenFD with MAX_CONNECTIONS conn backlog
         perror("listen");
         close(listenFD);
         exit(EXIT_FAILURE);
@@ -107,7 +95,7 @@ int main(int argc, char *argv[]){
     setnonblocking(listenFD);
 
     // Create epoll file descriptor
-    epollFD = epoll_create1(0);
+    int epollFD = epoll_create1(0);
     if (epollFD == -1){
         perror("epoll_create1");
         close(listenFD);
@@ -127,14 +115,14 @@ int main(int argc, char *argv[]){
 
 
     // Initialze threadpool
-    threadpool = threadpool_init(NUM_THREADS);
+    threadpool_t* threadpool = threadpool_init(NUM_THREADS);
 
 
     // Main loop
-    while (1){
+    while (ACTIVE){
 
         // Get current number of events
-        int n = epoll_wait(epollFD,events,MAXEVENTS,-1);
+        int n = epoll_wait(epollFD,events,MAXEVENTS,1000);
 
         if (n <0){
             if (errno == EINTR){
@@ -149,7 +137,7 @@ int main(int argc, char *argv[]){
         for(int i=0;i<n;i++){
             if (events[i].data.fd == listenFD){
                 // We are receiving new connection(s)
-                add_new_connections(epollFD,listenFD);
+                add_new_connections(epollFD,listenFD,threadpool);
             } else {
                 connection_t* conn = events[i].data.ptr;
 
@@ -191,7 +179,11 @@ int main(int argc, char *argv[]){
         }
     }
     // close everything up:
-    graceful_exit(0);
+    close(listenFD);
+    close(epollFD);
+    epollFD = -1;
+    threadpool_destroy(threadpool);
+    threadpool=NULL;    
     exit(0);
 
 

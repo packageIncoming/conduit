@@ -1,3 +1,4 @@
+#pragma once
 #include <stddef.h>
 #ifndef RESPONSE
 #define RESPONSE
@@ -11,6 +12,7 @@ extern const char* const REASON_METHOD_NOT_ALLOWED; // 405
 extern const char* const REASON_FORBIDDEN; // 403
 extern const char* const REASON_BAD_REQUEST; // 400
 extern const char* const REASON_OK; // 200
+extern const char* const REASON_TEMP_UNAVAILABLE; // 503
 
 
 typedef struct {

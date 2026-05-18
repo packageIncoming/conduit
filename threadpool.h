@@ -1,9 +1,12 @@
+#pragma once
 
-#include "epoll_handler.h"
 #include <pthread.h>
-#ifndef THREADPOOL
+#include "epoll_handler.h"
+#ifndef THREADPOOL 
 #define THREADPOOL
 #define NUM_THREADS 50
+#define CONNECTIONS_PER_THREAD 20
+#define MAX_CONNECTIONS  (NUM_THREADS * CONNECTIONS_PER_THREAD)
 
 
 typedef struct task_s {
@@ -19,7 +22,7 @@ typedef struct{
 } task_list_t; // FIFO Queue LinkedList implementation
 
 
-typedef struct{
+typedef struct threadpool{
     int num_threads;
     pthread_mutex_t mutex;
     pthread_cond_t cond;

@@ -12,7 +12,7 @@ const char* const REASON_NOT_FOUND = "Not Found"; // 404
 const char* const REASON_METHOD_NOT_ALLOWED = "Method Not Allowed"; // 405
 const char* const REASON_FORBIDDEN = "Forbidden"; // 403
 const char* const REASON_BAD_REQUEST = "Bad Request"; // 400
-
+const char* const REASON_TEMP_UNAVAILABLE = "Temporarily Unavailable"; // 503
 const char* const REASON_OK = "OK"; // 200
 
 

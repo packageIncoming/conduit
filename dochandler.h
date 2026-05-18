@@ -1,3 +1,4 @@
+#pragma once
 #ifndef DOCHANDLER
 #define DOCHANDLER
 #include <stddef.h>

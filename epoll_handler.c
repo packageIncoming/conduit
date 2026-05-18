@@ -8,10 +8,11 @@
 #include <unistd.h>
 #include <inttypes.h>
 
-#include "epoll_handler.h"
 #include "dochandler.h"
 #include "request.h"
 #include "response.h"
+#include "epoll_handler.h"
+#include "threadpool.h"
 
 void setnonblocking(int fd){
     int flags = fcntl(fd, F_GETFL, 0);
@@ -27,13 +28,27 @@ void connection_free(connection_t* connection){
     free(connection);
 }
 
-void add_new_connections(int epollFD, int listenFD){
+void add_new_connections(int epollFD, int listenFD,threadpool_t* threadpool){
     while (1){
         int clientFD = accept(listenFD,NULL,NULL);
+
         if (clientFD == -1){
             break; // no more connections AND/OR blocking
         }
         setnonblocking(clientFD);
+        // If we are already at our connection limit then just send a 503 error to them
+        pthread_mutex_lock(&threadpool->mutex);
+        if (threadpool->active_connections >= MAX_CONNECTIONS) {
+            pthread_mutex_unlock(&threadpool->mutex);
+            
+            // 2. Dump a raw 503 string directly to the socket and close it. 
+            // No malloc, no struct initialization, no parsing.
+            const char* err503 = "HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
+            write(clientFD, err503, strlen(err503));
+            close(clientFD);
+            continue; // Move to the next pending connection
+        }
+        pthread_mutex_unlock(&threadpool->mutex);
         // construct connection_t object
         connection_t* conn = malloc(sizeof(connection_t));
         memset(conn,0,sizeof(*conn));
@@ -42,11 +57,14 @@ void add_new_connections(int epollFD, int listenFD){
         conn->wb_offset=0;
         http_request_t* request = malloc(sizeof(http_request_t));
         http_response_t* response = malloc(sizeof(http_response_t));
+        conn->last_active = time(NULL);
         memset(request,0,sizeof(*request));
         memset(response,0,sizeof(*response));
         conn->request=request;
         conn->response=response;
         response->owns_body_flag=0;
+
+
         // construct epoll_event object to pass to epoll_ctl
         struct epoll_event ev;
         ev.data.ptr = conn;
@@ -68,6 +86,8 @@ int _connection_read_to_buffer(int fd, connection_t* conn){
     while (1){
         size_t remaining = READBUFFER_SIZE - conn->rb_offset - 1;
         if (remaining == 0){
+            char trash_buffer[2048];
+            while (read(fd, trash_buffer, sizeof(trash_buffer)) > 0);
             return -1;
         }
         ssize_t read_byte_count = read(fd,&(conn->read_buffer[conn->rb_offset]),remaining); // read 256 bytes from clientFD into the buff
@@ -118,7 +138,7 @@ int _connection_populate_request(connection_t* conn){
     while (line_end!= NULL){
         int n = sscanf(
             line_start, 
-            "%[^:]: %[^\r\n]", 
+            "%255[^:]: %511[^\r\n]", 
             conn->request->headers[headerCount].key,
             conn->request->headers[headerCount].value);
         if (n != 2){ break;}
