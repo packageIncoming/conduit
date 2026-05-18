@@ -19,6 +19,29 @@ void setnonblocking(int fd){
     fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
 
+conn_list_t* conn_list_init(){
+    conn_list_t* conn_list = calloc(1,sizeof(conn_list_t));
+    conn_list->conn_count=0;
+    conn_list->head = calloc(1,sizeof(conn_node_t));;
+    conn_list->tail = NULL;
+    return conn_list;
+}
+
+void conn_list_destroy(conn_list_t* conn_list){
+    
+}
+
+int conn_list_sweep(conn_list_t* conn_list, int timeout){
+
+}
+
+void conn_list_remove_by_connection(conn_list_t* conn_list, connection_t* connection){
+
+}
+
+void conn_list_enqueue(conn_list_t* conn_list, conn_node_t* conn_node){
+
+}
 
 void connection_free(connection_t* connection){
     free(connection->write_buffer);
@@ -28,7 +51,7 @@ void connection_free(connection_t* connection){
     free(connection);
 }
 
-void add_new_connections(int epollFD, int listenFD,threadpool_t* threadpool){
+void add_new_connections(int epollFD, int listenFD,threadpool_t* threadpool,conn_list_t* conn_list){
     while (1){
         int clientFD = accept(listenFD,NULL,NULL);
 
@@ -91,6 +114,7 @@ int _connection_read_to_buffer(int fd, connection_t* conn){
             return -1;
         }
         ssize_t read_byte_count = read(fd,&(conn->read_buffer[conn->rb_offset]),remaining); // read 256 bytes from clientFD into the buff
+        time(&conn->last_active);
         if (read_byte_count == -1){
             if( errno == EAGAIN){ break;}
             return -1; // Unexpected error
@@ -322,6 +346,7 @@ int _connection_write_to_client(int fd, connection_t* conn){
                 return -1; // Unexpected Error
             }
         }
+        time(&conn->last_active);
         conn->wb_offset+= write_byte_count;
     }
     return 0;

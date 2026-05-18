@@ -116,13 +116,17 @@ int main(int argc, char *argv[]){
 
     // Initialze threadpool
     threadpool_t* threadpool = threadpool_init(NUM_THREADS);
+    // Initialize (reading) connections linked list
+    conn_list_t* conn_list = conn_list_init();
 
 
     // Main loop
+
     while (ACTIVE){
 
         // Get current number of events
         int n = epoll_wait(epollFD,events,MAXEVENTS,1000);
+
 
         if (n <0){
             if (errno == EINTR){
@@ -137,7 +141,7 @@ int main(int argc, char *argv[]){
         for(int i=0;i<n;i++){
             if (events[i].data.fd == listenFD){
                 // We are receiving new connection(s)
-                add_new_connections(epollFD,listenFD,threadpool);
+                add_new_connections(epollFD,listenFD,threadpool,conn_list);
             } else {
                 connection_t* conn = events[i].data.ptr;
 
@@ -166,7 +170,7 @@ int main(int argc, char *argv[]){
                         epoll_ctl(epollFD,EPOLL_CTL_DEL,conn->fd,NULL);
                         close(conn->fd);
                         connection_free(conn);
-                    } 
+                    }
                 } else {
                     // Either EPOLLERR or EPOLLHUP so just kill the connection and free the associated connection struct
                     conn->status = CONN_DONE;
@@ -183,6 +187,7 @@ int main(int argc, char *argv[]){
     close(epollFD);
     epollFD = -1;
     threadpool_destroy(threadpool);
+    conn_list_destroy(conn_list);
     threadpool=NULL;    
     exit(0);
 

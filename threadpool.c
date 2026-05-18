@@ -121,7 +121,6 @@ void threadpool_destroy(threadpool_t* threadpool){
     free(threadpool->threads);
 
     // Free task list 
-    free(threadpool->task_list->head);
     if (threadpool->task_list->task_count > 0){
         task_t* curr = threadpool->task_list->head->next;
         while (curr!= NULL){
@@ -131,7 +130,8 @@ void threadpool_destroy(threadpool_t* threadpool){
             curr=nxt;
         }
     }
-
+    free(threadpool->task_list->head);
+    free(threadpool->task_list);
 
     // Free threadpool itself
     pthread_mutex_destroy(&threadpool->mutex);

@@ -24,6 +24,34 @@ typedef struct {
     char read_buffer[READBUFFER_SIZE];
 } connection_t; 
 
+typedef struct conn_node_s {
+    connection_t* connection;
+    struct conn_node_s* prev;
+    struct conn_node_s* nxt;
+     
+} conn_node_t;
+
+// FIFO Queue LinkedList implementation; keeps track of connections with state CONN_READING; used to close connections that timeout
+typedef struct{
+    int conn_count;
+    conn_node_t* head; // dummy head 
+    conn_node_t* tail; // Append new connections to the end
+} conn_list_t; 
+
+// allocates conn_list_t
+conn_list_t* conn_list_init(); 
+
+// destructor for conn_list_t
+void conn_list_destroy(conn_list_t* conn_list);
+
+// sweeps through the given conn_list and closes the connections who have timed out (now - last_active >= timeout); returns # of timed out connections
+int conn_list_sweep(conn_list_t* conn_list, int timeout);
+
+// Removes a connection from the linked list by searching through using the pointer 
+void conn_list_remove_by_connection(conn_list_t* conn_list, connection_t* connection);
+
+// Appends conn_node to end of conn_list (Linked List)
+void conn_list_enqueue(conn_list_t* conn_list, conn_node_t* conn_node);
 
 // Sets a file descriptor to be nonblocking using fcntl(fd, F_SETFL, flags | O_NONBLOCK)
 void setnonblocking(int fd);
@@ -33,7 +61,8 @@ void connection_free(connection_t* connection);
 
 // Adds new connections to the associated epoll instance until accept() returns -1 (EAGAIN)
 // Adds with flags EPOLLIN | EPOLLET
-void add_new_connections(int epollFD, int listenFD,threadpool_t* threadpool);
+// Adds to conn_list 
+void add_new_connections(int epollFD, int listenFD,threadpool_t* threadpool,conn_list_t* conn_list);
 
 
 // --------------------- EPOLLIN-BASED METHODS --------------------- //
