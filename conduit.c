@@ -112,12 +112,13 @@ int main(int argc, char *argv[]){
         close(listenFD);
         exit(EXIT_FAILURE);
     }
+    perror("epoll_ctl listenFD success");
 
 
     // Initialze threadpool
     threadpool_t* threadpool = threadpool_init(NUM_THREADS);
     // Initialize (reading) connections linked list
-    conn_list_t* conn_list = conn_list_init();
+    conn_list_t* conn_list = conn_list_init(threadpool);
 
 
     // Main loop
@@ -138,6 +139,9 @@ int main(int argc, char *argv[]){
             }
         }
 
+        // Sweep the reading connections to get rid of timed-out connections
+        conn_list_sweep(conn_list,TIMEOUT_SECONDS);
+
         for(int i=0;i<n;i++){
             if (events[i].data.fd == listenFD){
                 // We are receiving new connection(s)
@@ -150,7 +154,10 @@ int main(int argc, char *argv[]){
                     // Reading from client
                     int result = connection_on_epollin(conn->fd,conn,docroot);
                     if(result ==1){
+
                         // Reading done, create task_t struct and enqueue
+                        // Also remove it from the 'reading connections' LL 
+                        conn_list_remove_by_connection(conn_list,conn);
                         task_t* task = calloc(1,sizeof(task_t));
                         task->connection = conn;
                         conn->status=CONN_WRITING;
@@ -165,30 +172,38 @@ int main(int argc, char *argv[]){
 
                     } else if (result == -1){
                         // Error occurred
+                        // Remove from 'reading connections' LL 
+                        conn_list_remove_by_connection(conn_list,conn);
                         conn->status = CONN_DONE;
                         ev.data.ptr = conn;
                         epoll_ctl(epollFD,EPOLL_CTL_DEL,conn->fd,NULL);
                         close(conn->fd);
-                        connection_free(conn);
+                        connection_free(conn,threadpool);
+                        
                     }
                 } else {
                     // Either EPOLLERR or EPOLLHUP so just kill the connection and free the associated connection struct
+                    // Remove from 'reading connections'
+                    conn_list_remove_by_connection(conn_list,conn);
                     conn->status = CONN_DONE;
                     ev.data.ptr = conn;
                     epoll_ctl(epollFD,EPOLL_CTL_DEL,conn->fd,NULL);
                     close(conn->fd);
-                    connection_free(conn); 
+                    connection_free(conn,threadpool); 
                 }
             }
         }
     }
     // close everything up:
+    printf("%i active at end\n",threadpool->active_connections);
     close(listenFD);
     close(epollFD);
     epollFD = -1;
-    threadpool_destroy(threadpool);
     conn_list_destroy(conn_list);
+    conn_list=NULL;
+    threadpool_destroy(threadpool);
     threadpool=NULL;    
+
     exit(0);
 
 

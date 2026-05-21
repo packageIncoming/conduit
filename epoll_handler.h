@@ -31,15 +31,17 @@ typedef struct conn_node_s {
      
 } conn_node_t;
 
-// FIFO Queue LinkedList implementation; keeps track of connections with state CONN_READING; used to close connections that timeout
+// LinkedList implementation; keeps track of connections with state CONN_READING; used to close connections that timeout
+// Since order does not matter (performing a linear sweep for timeout check), we add
+// to the head 
 typedef struct{
     int conn_count;
+    threadpool_t* threadpool;
     conn_node_t* head; // dummy head 
-    conn_node_t* tail; // Append new connections to the end
 } conn_list_t; 
 
 // allocates conn_list_t
-conn_list_t* conn_list_init(); 
+conn_list_t* conn_list_init(threadpool_t* threadpool); 
 
 // destructor for conn_list_t
 void conn_list_destroy(conn_list_t* conn_list);
@@ -57,7 +59,7 @@ void conn_list_enqueue(conn_list_t* conn_list, conn_node_t* conn_node);
 void setnonblocking(int fd);
 
 // Frees the write and read buffers that were malloc'd
-void connection_free(connection_t* connection);
+void connection_free(connection_t* connection,threadpool_t* threadpool);
 
 // Adds new connections to the associated epoll instance until accept() returns -1 (EAGAIN)
 // Adds with flags EPOLLIN | EPOLLET
@@ -96,4 +98,4 @@ int _connection_write_to_client(int fd, connection_t* conn);
 // 0 if not done (parts still remain, wb_offset<wb_size), -1 on error
 int connection_on_epollout(int fd,connection_t* conn);
 
-#endif
+#endif 

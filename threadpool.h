@@ -4,7 +4,7 @@
 #include "epoll_handler.h"
 #ifndef THREADPOOL 
 #define THREADPOOL
-#define NUM_THREADS 50
+#define NUM_THREADS 4
 #define CONNECTIONS_PER_THREAD 20
 #define MAX_CONNECTIONS  (NUM_THREADS * CONNECTIONS_PER_THREAD)
 

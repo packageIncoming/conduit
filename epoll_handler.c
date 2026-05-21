@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <inttypes.h>
+#include <time.h>
 
 #include "dochandler.h"
 #include "request.h"
@@ -19,36 +20,97 @@ void setnonblocking(int fd){
     fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
 
-conn_list_t* conn_list_init(){
+conn_list_t* conn_list_init(threadpool_t* threadpool){
     conn_list_t* conn_list = calloc(1,sizeof(conn_list_t));
     conn_list->conn_count=0;
+    conn_list->threadpool = threadpool;
     conn_list->head = calloc(1,sizeof(conn_node_t));;
-    conn_list->tail = NULL;
     return conn_list;
 }
 
 void conn_list_destroy(conn_list_t* conn_list){
-    
+    conn_node_t* head = conn_list->head;
+    conn_node_t* curr = head->nxt;
+    free(head);
+    while (curr != NULL){
+        close(curr->connection->fd);
+        connection_free(curr->connection,conn_list->threadpool);
+        conn_node_t* temp = curr->nxt;
+        free(curr);
+        curr=temp;
+
+    }
+    free(conn_list);
 }
 
 int conn_list_sweep(conn_list_t* conn_list, int timeout){
-
+    conn_node_t* curr = conn_list->head->nxt;
+    int removeCount=0;
+    while (curr != NULL){
+        conn_node_t* temp = curr->nxt;
+        if (time(NULL)-curr->connection->last_active >= timeout){
+            // This connection has timed out
+            printf("connection on fd %i disconnected.\n",curr->connection->fd);
+            curr->connection->status=CONN_DONE;
+            const char* err408 = "HTTP/1.1 408 Request Timeout\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
+            write(curr->connection->fd, err408, strlen(err408));
+            close(curr->connection->fd);
+            connection_free(curr->connection,conn_list->threadpool);
+            curr->prev->nxt=curr->nxt;
+            if (curr->nxt!= NULL){
+                curr->nxt->prev = curr->prev;
+            }
+            free(curr);
+            conn_list->conn_count-=1;
+            removeCount++;
+        }
+        curr = temp;
+    }
+    return removeCount;
 }
 
-void conn_list_remove_by_connection(conn_list_t* conn_list, connection_t* connection){
-
+void conn_list_remove_by_connection(conn_list_t* conn_list, connection_t* target){
+    conn_node_t* curr = conn_list->head->nxt;
+    while (curr != NULL){
+        if (curr->connection == target){
+            curr->prev->nxt = curr->nxt;
+            if (curr->nxt!= NULL){
+                curr->nxt->prev = curr->prev;
+            }
+            free(curr);
+            conn_list->conn_count-=1;
+            return;
+        } else {
+            curr = curr->nxt;
+        }
+    }
 }
 
 void conn_list_enqueue(conn_list_t* conn_list, conn_node_t* conn_node){
+    conn_node_t* prev_head = conn_list->head->nxt;
+    if (prev_head != NULL){
+        conn_node->nxt = conn_list->head->nxt;
+        conn_list->head->nxt->prev = conn_node;
+        conn_node->prev = conn_list->head;
+        conn_list->head->nxt = conn_node;
+    } else {
+        conn_list->head->nxt= conn_node;
+        conn_node->prev = conn_list->head;
+    }
 
+    conn_list->conn_count+=1;
 }
 
-void connection_free(connection_t* connection){
+void connection_free(connection_t* connection,threadpool_t* threadpool){
     free(connection->write_buffer);
     free(connection->request);
     response_clean(connection->response);
     free(connection->response);
     free(connection);
+    pthread_mutex_lock(&threadpool->mutex);
+    threadpool->active_connections-=1;
+    pthread_mutex_unlock(&threadpool->mutex);
+
 }
 
 void add_new_connections(int epollFD, int listenFD,threadpool_t* threadpool,conn_list_t* conn_list){
@@ -71,6 +133,8 @@ void add_new_connections(int epollFD, int listenFD,threadpool_t* threadpool,conn
             close(clientFD);
             continue; // Move to the next pending connection
         }
+        // Otherwise increment the active_connections
+        threadpool->active_connections+=1;
         pthread_mutex_unlock(&threadpool->mutex);
         // construct connection_t object
         connection_t* conn = malloc(sizeof(connection_t));
@@ -96,8 +160,18 @@ void add_new_connections(int epollFD, int listenFD,threadpool_t* threadpool,conn
         if(epoll_ctl(epollFD,EPOLL_CTL_ADD,clientFD,&ev) == -1){
             perror("epoll_ctl, add_new_connections");
             close(clientFD);
-            connection_free(conn);
+            connection_free(conn,threadpool);
+            return;
         } 
+
+        // now create conn_node_t struct to add to conn_list:
+        conn_node_t* conn_node = calloc(1,sizeof(conn_node_t));
+        conn_node->connection = conn;
+        conn_list_enqueue(conn_list,conn_node);
+
+        
+
+
     }    
 }
 
@@ -231,7 +305,11 @@ void _connection_construct_response(connection_t* conn, const char* docroot){
     int filepath_size=1024;
     char filepath[filepath_size];
     memset(&filepath,0,filepath_size);
-    construct_filepath(docroot,conn->request->path,filepath,filepath_size);
+    if(construct_filepath(docroot,conn->request->path,filepath,filepath_size) == 1){
+        // Error occurred while constructing filepath
+        response_fill_as_error(conn->response,404,REASON_NOT_FOUND);
+        return;
+    }
     
     // 2. Verify the raw path starts with the docroot
     if (verify_path_starts_with_docroot(docroot,filepath) == 1){

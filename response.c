@@ -14,22 +14,22 @@ const char* const REASON_FORBIDDEN = "Forbidden"; // 403
 const char* const REASON_BAD_REQUEST = "Bad Request"; // 400
 const char* const REASON_TEMP_UNAVAILABLE = "Temporarily Unavailable"; // 503
 const char* const REASON_OK = "OK"; // 200
+const char* const REASON_REQUEST_TIMEOUT = "Request Timeout"; //408
 
 
 void response_set_status(http_response_t *resp, int code, const char *reason){
-    memcpy(resp->reason_phrase,reason,strlen(reason));
-    resp->status_code=code;
+    snprintf(resp->reason_phrase, sizeof(resp->reason_phrase), "%s", reason);
+    resp->status_code = code;
 }
 
 void response_add_header(http_response_t *resp, const char *key, const char *value){
-    char* resp_key = resp->headers[resp->header_count].key;
-    char* resp_val = resp->headers[resp->header_count].value;
-
-    memcpy(resp_key,key,strlen(key));
-    memcpy(resp_val,value,strlen(value));
-
-
-    resp->header_count+=1;
+    snprintf(resp->headers[resp->header_count].key,
+             sizeof(resp->headers[resp->header_count].key),
+             "%s", key);
+    snprintf(resp->headers[resp->header_count].value,
+             sizeof(resp->headers[resp->header_count].value),
+             "%s", value);
+    resp->header_count += 1;
 }
 
 void response_set_body(http_response_t *resp, const char *body, int length, int owns_body){

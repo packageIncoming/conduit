@@ -28,16 +28,12 @@ void* thread_routine(void* arg){
         }
         // Dequeue task if not shutting down 
         task_t* task = threadpool_dequeue(threadpool);
-        threadpool->active_connections+=1;
         pthread_mutex_unlock(&threadpool->mutex);
         
         connection_on_epollout(task->connection->fd,task->connection);
         close(task->connection->fd);
-        connection_free(task->connection);
+        connection_free(task->connection,threadpool); 
         free(task);
-        pthread_mutex_lock(&threadpool->mutex);
-        threadpool->active_connections-=1;
-        pthread_mutex_unlock(&threadpool->mutex);
     }
     return (void*) 0;
 }
@@ -125,7 +121,7 @@ void threadpool_destroy(threadpool_t* threadpool){
         task_t* curr = threadpool->task_list->head->next;
         while (curr!= NULL){
             task_t* nxt = curr->next;
-            connection_free(curr->connection);
+            connection_free(curr->connection,threadpool);
             free(curr);
             curr=nxt;
         }

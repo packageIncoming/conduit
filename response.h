@@ -13,7 +13,7 @@ extern const char* const REASON_FORBIDDEN; // 403
 extern const char* const REASON_BAD_REQUEST; // 400
 extern const char* const REASON_OK; // 200
 extern const char* const REASON_TEMP_UNAVAILABLE; // 503
-
+extern const char* const REASON_REQUEST_TIMEOUT; // 408
 
 typedef struct {
     int status_code;
