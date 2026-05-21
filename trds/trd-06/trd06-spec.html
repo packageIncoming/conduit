@@ -87,7 +87,7 @@
 <ol>
   <li>Why is <code>SIGPIPE</code> fatal by default? What design assumption does that reflect?</li>
   <li>Why must the signal handler use <code>volatile sig_atomic_t</code> instead of a plain <code>int</code>?</li>
-  <li>How does the idle timeout sweep interact with the epoll event loop without blocking?</li>
+  <li>The connection idle timeout (R6) requires evicting clients that have been silent for 30 seconds. How is this implemented without blocking the epoll event loop? Your answer should address both how the sweep is scheduled and why the sweep itself is non-blocking.</li>
   <li>What is a slowloris attack and which requirement in this TRD defends against it?</li>
 </ol>
 

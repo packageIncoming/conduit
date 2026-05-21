@@ -1,8 +1,8 @@
 Why is SIGPIPE fatal by default? What design assumption does that reflect?
-    ANS: 
+    ANS: SIGPIPE was designed originally to handle the simple case of a shell pipeline where the output of one program is sent as input to another program through |. The design assumption is that, if the producer process does not have a consumer process, then it is outputting data for no reason and should therefore be terminated. However this is the incorrect assumption for a network server because other clients may be present that are still listening.
 Why must the signal handler use volatile sig_atomic_t instead of a plain int?
-    ANS: A plain int can have its values corrupted but the volatile keyword prevents it being cached  and the sig_atomic_t keyword forces the kernel to perform one  R/W 
-How does the idle timeout sweep interact with the epoll event loop without blocking?
-    ANS: It sweeps in the main thread not on worker threads 
+    ANS: The two keywords assist in preventing the value from being corrupted or stale. Volatile tells the compiler to not cache the value in a register, sig_atomic_t tells the hardware to not split reads/writes into multiple operations 
+The connection idle timeout (R6) requires evicting clients that have been silent for 30 seconds. How is this implemented without blocking the epoll event loop? Your answer should address both how the sweep is scheduled and why the sweep itself is non-blocking.
+    ANS: The connection idle timeout (R6) is enforced by conn_list_sweep, which runs in the main thread between epoll_wait returns. epoll_wait is given a 2-second timeout argument, which caps how long the loop will sit idle on a quiet server before running the sweep — this guarantees expired connections are detected within 2 seconds of crossing the 30-second threshold. The sweep itself is non-blocking: it walks the connection list comparing time(NULL) - last_active against the threshold, with no I/O on healthy connections. Eviction (close + free) only happens for connections actually past the deadline. Because the sweep is sequential with epoll_wait and event processing — not concurrent with them — there's no synchronization needed, and the main thread is never parked except inside epoll_wait itself.
 What is a slowloris attack and which requirement in this TRD defends against it?
-    ANS: It is an attack wherein a client purposefully sends their request bytes slowly to the server. R4  defends against slowloris attacks.
+    ANS: It is an attack wherein a client purposefully sends their request bytes slowly to the server. R4 and R3 defend against slowloris attacks.
