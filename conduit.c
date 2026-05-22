@@ -158,17 +158,19 @@ int main(int argc, char *argv[]){
                         // Reading done, create task_t struct and enqueue
                         // Also remove it from the 'reading connections' LL 
                         conn_list_remove_by_connection(conn_list,conn);
+                        if (epoll_ctl(epollFD,EPOLL_CTL_DEL,conn->fd,NULL) == -1){
+                            perror("epoll_ctl: request parse done");
+                        }
                         task_t* task = calloc(1,sizeof(task_t));
                         task->connection = conn;
                         conn->status=CONN_WRITING;
+
                         pthread_mutex_lock(&threadpool->mutex);
                         threadpool_enqueue(threadpool,task);
                         pthread_mutex_unlock(&threadpool->mutex);
 
                         // Remove the fd from the epoll since now the worker owns that connection
-                        if (epoll_ctl(epollFD,EPOLL_CTL_DEL,conn->fd,NULL) == -1){
-                            perror("epoll_ctl: request parse done");
-                        }
+
 
                     } else if (result == -1){
                         // Error occurred
