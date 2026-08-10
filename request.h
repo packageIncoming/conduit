@@ -4,6 +4,8 @@
 
 extern const char* const CRLF;
 
+#define MAX_REQUEST_HEADERS 32
+
 typedef struct {
     char method[8];
     char path[1024];
@@ -11,7 +13,7 @@ typedef struct {
     struct {
         char key[256];
         char value[512];
-    } headers[32]; // Creates a struct 'header' that has a 'key' and a 'value'. Initializes an array of 32 of these.
+    } headers[MAX_REQUEST_HEADERS]; // Creates a struct 'header' that has a 'key' and a 'value'.
     int header_count;
 
 } http_request_t;

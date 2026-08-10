@@ -112,8 +112,6 @@ int main(int argc, char *argv[]){
         close(listenFD);
         exit(EXIT_FAILURE);
     }
-    perror("epoll_ctl listenFD success");
-
 
     // Initialze threadpool
     threadpool_t* threadpool = threadpool_init(NUM_THREADS);

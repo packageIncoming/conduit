@@ -42,17 +42,27 @@ int construct_filepath(const char *docroot, const  char *request_uri, char* buff
 
 int verify_path_starts_with_docroot(const char* docroot, const char* filepath){
     char* docroot_absolute_path = realpath(docroot,NULL);
-    char* result = strstr(filepath,docroot_absolute_path);
-    if (result == NULL){
-        free(docroot_absolute_path);
-        return 1; // did not find
+    if (docroot_absolute_path == NULL){
+        return 1; // docroot itself does not resolve; refuse rather than deref NULL
     }
-    if (filepath - result == 0){
+    size_t root_len = strlen(docroot_absolute_path);
+
+    // Must match at position 0, not merely appear somewhere in the path.
+    if (strncmp(filepath, docroot_absolute_path, root_len) != 0){
         free(docroot_absolute_path);
-        return 0; // found at the start
+        return 1;
     }
+
+    // The match must end on a path-component boundary. Without this,
+    // docroot "/srv/www" would accept "/srv/www-evil/secret.txt".
+    char next = filepath[root_len];
+    if (next != '/' && next != '\0'){
+        free(docroot_absolute_path);
+        return 1;
+    }
+
     free(docroot_absolute_path);
-    return 1; // Failed 
+    return 0;
 }
 
 int get_file_size_from_fd(int fd){

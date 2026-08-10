@@ -233,7 +233,7 @@ int _connection_populate_request(connection_t* conn){
     char *line_start = first_crlf+2;
     char *line_end = strstr(line_start,CRLF);
     int headerCount = 0;
-    while (line_end!= NULL){
+    while (line_end != NULL && headerCount < MAX_REQUEST_HEADERS){
         int n = sscanf(
             line_start, 
             "%255[^:]: %511[^\r\n]", 
@@ -244,6 +244,7 @@ int _connection_populate_request(connection_t* conn){
         line_start = line_end+2;
         line_end = strstr(line_start,CRLF);
     }
+    conn->request->header_count = headerCount;
     return 0; 
 }
 
@@ -372,8 +373,10 @@ void _connection_serialize_response(connection_t* conn){
     // calculate response size
     http_response_t* resp = conn->response;
     // Represents the MAXIMUM SIZE if ALL HEADERS (KEY+VALUE) COMPLETELY FILLED
-    int response_size = resp->body_size + strlen(resp->reason_phrase) + HEADER_LINE_BYTES*resp->header_count + 18;
-    char* final_response = (char *)malloc(response_size);
+    // Fixed overhead: status line (<=23 + reason), Content-Length line (<=38),
+    // blank line (2), trailing NUL (1). 128 is a deliberate over-estimate.
+    int response_size = resp->body_size + strlen(resp->reason_phrase)
+                        + HEADER_LINE_BYTES*resp->header_count + 128;    char* final_response = (char *)malloc(response_size);
     conn->write_buffer=final_response; // Set ownership
     conn->wb_offset=0;
     int written_bytes=0;
@@ -402,10 +405,14 @@ void _connection_serialize_response(connection_t* conn){
     // add \r\n before body
     written_bytes+= sprintf(final_response+written_bytes,"\r\n");
 
-    // add body
-    written_bytes+=snprintf(final_response+written_bytes,resp->body_size+1,"%s",resp->body);
-    // add nullbyte
-    final_response[written_bytes]='\0';
+    // add body -- memcpy, not snprintf("%s"): the body may contain NUL bytes
+    // (any binary file), and %s would truncate at the first one while
+    // Content-Length still advertised the full size.
+    if (resp->body != NULL && resp->body_size > 0){
+        memcpy(final_response+written_bytes, resp->body, resp->body_size);
+        written_bytes += (int)resp->body_size;
+    }
+    final_response[written_bytes]='\0'; // convenience only; wb_size is authoritative
     conn->wb_size=written_bytes;
 }
 
