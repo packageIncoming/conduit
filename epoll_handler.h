@@ -52,7 +52,7 @@ conn_list_t* conn_list_init();
 void conn_list_destroy(conn_list_t* conn_list,thread_state* state);
 
 // sweeps through the given conn_list and closes the connections who have timed out (now - last_active >= timeout); returns # of timed out connections
-int conn_list_sweep(conn_list_t* conn_list, int timeout, thread_state* state);
+int conn_list_sweep(conn_list_t* conn_list, int timeout, thread_state* state, int epoll_fd);
 
 // Removes a connection from the linked list by searching through using the pointer 
 void conn_list_remove_by_connection(conn_list_t* conn_list, connection_t* connection);

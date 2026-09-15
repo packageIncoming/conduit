@@ -130,7 +130,6 @@ void* thread_init(void* _args)
         }
 
         // Sweep the reading connections to get rid of timed-out connections
-        conn_list_sweep(conn_list,TIMEOUT_SECONDS,&state);
 
         for(int i=0;i<n;i++){
             if (events[i].data.fd == listenFD){
@@ -215,6 +214,8 @@ void* thread_init(void* _args)
                 }
             }
         }
+        conn_list_sweep(conn_list,TIMEOUT_SECONDS,&state,epollFD);
+
     }
     // close everything up:
     close(listenFD);

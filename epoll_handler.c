@@ -41,16 +41,18 @@ void conn_list_destroy(conn_list_t* conn_list,thread_state* state){
     free(conn_list);
 }
 
-int conn_list_sweep(conn_list_t* conn_list, int timeout, thread_state* state){
+int conn_list_sweep(conn_list_t* conn_list, int timeout, thread_state* state, int epoll_fd){
     conn_node_t* curr = conn_list->head->nxt;
     int removeCount=0;
+    time_t curTime = time(NULL);
     while (curr != NULL){
         conn_node_t* temp = curr->nxt;
-        if (time(NULL)-curr->connection->last_active >= timeout){
+        if (curTime-curr->connection->last_active >= timeout){
             // This connection has timed out
             curr->connection->status=CONN_DONE;
             const char* err408 = "HTTP/1.1 408 Request Timeout\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
             write(curr->connection->fd, err408, strlen(err408));
+            epoll_ctl(epoll_fd,EPOLL_CTL_DEL,curr->connection->fd,NULL);
             close(curr->connection->fd);
             connection_free(curr->connection, state);
             curr->prev->nxt=curr->nxt;
