@@ -1,11 +1,12 @@
 #pragma once
 #include "request.h"
 #include "response.h"
+#include <time.h>
 #ifndef EPOLL_HANDLER
 #define EPOLL_HANDLER
 #define MAXEVENTS 100
 #define READBUFFER_SIZE 8192
-#define TIMEOUT_SECONDS 30
+#define TIMEOUT_SECONDS 10
 
 
 enum CONN_STATUS {CONN_READING, CONN_WRITING, CONN_DONE};
@@ -36,18 +37,22 @@ typedef struct conn_node_s {
 // to the head 
 typedef struct{
     int conn_count;
-    threadpool_t* threadpool;
     conn_node_t* head; // dummy head 
 } conn_list_t; 
 
+typedef struct thread_state{
+    int active_connections;
+    int max_connections;
+} thread_state;
+
 // allocates conn_list_t
-conn_list_t* conn_list_init(threadpool_t* threadpool); 
+conn_list_t* conn_list_init(); 
 
 // destructor for conn_list_t
-void conn_list_destroy(conn_list_t* conn_list);
+void conn_list_destroy(conn_list_t* conn_list,thread_state* state);
 
 // sweeps through the given conn_list and closes the connections who have timed out (now - last_active >= timeout); returns # of timed out connections
-int conn_list_sweep(conn_list_t* conn_list, int timeout);
+int conn_list_sweep(conn_list_t* conn_list, int timeout, thread_state* state, int epoll_fd);
 
 // Removes a connection from the linked list by searching through using the pointer 
 void conn_list_remove_by_connection(conn_list_t* conn_list, connection_t* connection);
@@ -59,12 +64,12 @@ void conn_list_enqueue(conn_list_t* conn_list, conn_node_t* conn_node);
 void setnonblocking(int fd);
 
 // Frees the write and read buffers that were malloc'd
-void connection_free(connection_t* connection,threadpool_t* threadpool);
+void connection_free(connection_t* connection,thread_state* state);
 
 // Adds new connections to the associated epoll instance until accept() returns -1 (EAGAIN)
 // Adds with flags EPOLLIN | EPOLLET
 // Adds to conn_list 
-void add_new_connections(int epollFD, int listenFD,threadpool_t* threadpool,conn_list_t* conn_list);
+void add_new_connections(int epollFD, int listenFD,thread_state* state, conn_list_t* conn_list);
 
 
 // --------------------- EPOLLIN-BASED METHODS --------------------- //
@@ -79,13 +84,13 @@ int _connection_populate_request(connection_t* conn);
 
 
 // Handles EPOLLIN ET event. Returns 1 if done (ie \r\n\r\n is found, http_request_t is made, wb is serialized and ready to go), 0 if not
-int connection_on_epollin(int fd,connection_t* conn, const char* docroot);
+int connection_on_epollin(int fd,connection_t* conn, const char* docroot, const char* docroot_absolute_path);
 
 // --------------------- EPOLLOUT-BASED METHODS --------------------- //
 
 // Constructs the http_response_t struct within the connection. Performs path validation and 
 // will automatically handle error states (403, 404)
-void _connection_construct_response(connection_t* conn, const char* docroot);
+void _connection_construct_response(connection_t* conn, const char* docroot, const char* docroot_absolute_path);
 
 
 // Serializes conn's http_response_t by turning it into a string and saving it in conn's wb

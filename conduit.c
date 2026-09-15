@@ -1,4 +1,8 @@
+#define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200809L
+#include <pthread.h>
+#include <errno.h>
+#include <sched.h>
 #include <stdio.h>
 #include <sys/socket.h>
 #include <stdlib.h>
@@ -8,53 +12,36 @@
 #include <stddef.h>
 #include <string.h>
 #include <fcntl.h>
-#include <errno.h>
 #include <sys/epoll.h>
 #include <inttypes.h>
 #include <signal.h>
-#include <time.h>
 
-#include "dochandler.h"
-#include "response.h"
-#include "request.h"
+//  Conduit-specific includes
 #include "epoll_handler.h"
-#include "threadpool.h"
+#include "args.h"
 
 volatile sig_atomic_t ACTIVE=1;
 
-void graceful_exit(){
-    ACTIVE=0;
-}
 
+void* thread_init(void* _args)
+{
+    conduit_args* args = (conduit_args*)_args;
+    printf("started thread\n");
+    printf("thread configuration:\n\tport=%d\n\tdocroot='%s'\n\tmax connections=%d\n",
+            args->port,
+            args->docroot,
+            args->conns_per_thread);
 
-int main(int argc, char *argv[]){
-    if (argc <3){
-        fprintf(stderr,"Usage: ./conduit <port number> <docroot>\n");
-        exit(EXIT_FAILURE);
+    int port = args->port;
+    const char* docroot = args->docroot;
+
+    //  Make sure the given docroot path resolves
+    char* docroot_absolute_path = realpath(args->docroot,NULL);
+    if (docroot_absolute_path == NULL){
+        perror("The given docroot does not resolve properly");
+        return (void*)(NULL); // docroot itself does not resolve; refuse rather than deref NULL
     }
-    int port = atoi(argv[1]);
-    printf("Using port %i\n",port);
 
-    char *docroot = argv[2];
-    printf("Docroot at %s\n",docroot);
-
-    signal(SIGPIPE, SIG_IGN); // Prevent server crash on write to closed socket
-
-    struct sigaction sa;
-
-    // Clear the structure and set the handler function
-    memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = &graceful_exit;
-
-    // Register SIGTERM/SIGINT to our handler
-    if (sigaction(SIGTERM, &sa, NULL) != 0) {
-        perror("Error binding SIGTERM handler");
-        return 1;
-    }
-    if (sigaction(SIGINT, &sa, NULL) != 0) {
-        perror("Error binding SIGINT handler");
-        return 1;
-    }
 
     // Part 0: making and priming the socket
     int listenFD = socket(AF_INET, SOCK_STREAM, 0);                         // We are creating a TCP socket on IPv4 
@@ -63,7 +50,7 @@ int main(int argc, char *argv[]){
         exit(EXIT_FAILURE);
     }
     int optval=1;
-    if (setsockopt(listenFD,SOL_SOCKET,SO_REUSEADDR,&optval,sizeof optval) <0){ // We are setting SO_REUSEADDR to 1 (TRUE) 
+    if (setsockopt(listenFD,SOL_SOCKET,SO_REUSEPORT,&optval,sizeof optval) <0){ 
         perror("setsockopt");
         close(listenFD);
         exit(EXIT_FAILURE);
@@ -86,7 +73,7 @@ int main(int argc, char *argv[]){
     }
 
     // now listen on that socket and forever accept connections
-    if(listen(listenFD,MAX_CONNECTIONS) == -1){  // listen on listenFD with MAX_CONNECTIONS conn backlog
+    if(listen(listenFD,SOMAXCONN) == -1){  // listen on listenFD with MAX_CONNECTIONS conn backlog
         perror("listen");
         close(listenFD);
         exit(EXIT_FAILURE);
@@ -101,6 +88,7 @@ int main(int argc, char *argv[]){
         close(listenFD);
         exit(EXIT_FAILURE);
     }
+    
     struct epoll_event ev, events[MAXEVENTS]; // When we call epoll_wait, events[] gets populated with epoll_event ptrs wherein events[i] is the epoll_event data for the ith FD 
 
     // Fill ev with contents to add listenFD as the first FD in epollFD's list
@@ -114,13 +102,17 @@ int main(int argc, char *argv[]){
     }
 
     // Initialze threadpool
-    threadpool_t* threadpool = threadpool_init(NUM_THREADS);
     // Initialize (reading) connections linked list
-    conn_list_t* conn_list = conn_list_init(threadpool);
+    conn_list_t* conn_list = conn_list_init();
+
+    thread_state state;
+    state.active_connections = 0;
+    state.max_connections = args->conns_per_thread;
+
+
 
 
     // Main loop
-
     while (ACTIVE){
 
         // Get current number of events
@@ -138,72 +130,142 @@ int main(int argc, char *argv[]){
         }
 
         // Sweep the reading connections to get rid of timed-out connections
-        conn_list_sweep(conn_list,TIMEOUT_SECONDS);
 
         for(int i=0;i<n;i++){
             if (events[i].data.fd == listenFD){
                 // We are receiving new connection(s)
-                add_new_connections(epollFD,listenFD,threadpool,conn_list);
+                add_new_connections(epollFD,listenFD,&state,conn_list);
             } else {
                 connection_t* conn = events[i].data.ptr;
+
+                // Socket is dead, nothing to read or write. Check this first
+                // since EPOLLERR/EPOLLHUP can arrive alongside EPOLLIN/EPOLLOUT
+                if (events[i].events & (EPOLLERR | EPOLLHUP)) {
+                    // Remove from 'reading connections'
+                    conn_list_remove_by_connection(conn_list,conn);
+                    conn->status = CONN_DONE;
+                    epoll_ctl(epollFD,EPOLL_CTL_DEL,conn->fd,NULL);
+                    close(conn->fd);
+                    connection_free(conn,&state);
+                    continue;
+                }
+
+                // Finishing a write that didn't complete in one go
+                if (events[i].events & EPOLLOUT) {
+                    int w = connection_on_epollout(conn->fd,conn);
+                    if (w == 1){
+                        // done writing, so close up this socket
+                        conn_list_remove_by_connection(conn_list,conn);
+                        conn->status = CONN_DONE;
+                        epoll_ctl(epollFD,EPOLL_CTL_DEL,conn->fd,NULL);
+                        close(conn->fd);
+                        connection_free(conn, &state);
+                    } else if (w < 0){
+                        // Write failed outright
+                        conn_list_remove_by_connection(conn_list,conn);
+                        conn->status = CONN_DONE;
+                        epoll_ctl(epollFD,EPOLL_CTL_DEL,conn->fd,NULL);
+                        close(conn->fd);
+                        connection_free(conn,&state);
+                    }
+                    // w == 0: still partial, stays armed for EPOLLOUT
+                    continue;
+                }
 
                 // We are handling some existing connection
                 if (events[i].events & EPOLLIN ) {
                     // Reading from client
-                    int result = connection_on_epollin(conn->fd,conn,docroot);
+                    int result = connection_on_epollin(conn->fd,conn,docroot, docroot_absolute_path);
                     if(result ==1){
 
-                        // Reading done, create task_t struct and enqueue
-                        // Also remove it from the 'reading connections' LL 
-                        conn_list_remove_by_connection(conn_list,conn);
-                        if (epoll_ctl(epollFD,EPOLL_CTL_DEL,conn->fd,NULL) == -1){
-                            perror("epoll_ctl: request parse done");
-                        }
-                        task_t* task = calloc(1,sizeof(task_t));
-                        task->connection = conn;
+                        // Reading done, write the response out.
+                        // Stay in the LL and in epoll until the write actually
+                        // finishes, otherwise a partial write orphans the conn
                         conn->status=CONN_WRITING;
-
-                        pthread_mutex_lock(&threadpool->mutex);
-                        threadpool_enqueue(threadpool,task);
-                        pthread_mutex_unlock(&threadpool->mutex);
-
-                        // Remove the fd from the epoll since now the worker owns that connection
-
+                        if (connection_on_epollout(conn->fd,conn) == 1){
+                            //  done writing too, so close up this socket
+                            conn_list_remove_by_connection(conn_list,conn);
+                            conn->status = CONN_DONE;
+                            if (epoll_ctl(epollFD,EPOLL_CTL_DEL,conn->fd,NULL) == -1){
+                                perror("epoll_ctl: request parse done");
+                            }
+                            close(conn->fd);
+                            connection_free(conn, &state);
+                        } else {
+                            //  We didn't finish writing, so switch this fd over
+                            //  to watching for writability and finish later
+                            struct epoll_event ev_out;
+                            ev_out.data.ptr = conn;
+                            ev_out.events = EPOLLOUT | EPOLLET;
+                            if (epoll_ctl(epollFD, EPOLL_CTL_MOD, conn->fd, &ev_out) == -1){
+                                perror("epoll_ctl: rearm for EPOLLOUT");
+                            }
+                        }
 
                     } else if (result == -1){
                         // Error occurred
-                        // Remove from 'reading connections' LL 
+                        // Remove from 'reading connections' LL
                         conn_list_remove_by_connection(conn_list,conn);
                         conn->status = CONN_DONE;
-                        ev.data.ptr = conn;
                         epoll_ctl(epollFD,EPOLL_CTL_DEL,conn->fd,NULL);
                         close(conn->fd);
-                        connection_free(conn,threadpool);
-                        
+                        connection_free(conn,&state);
                     }
-                } else {
-                    // Either EPOLLERR or EPOLLHUP so just kill the connection and free the associated connection struct
-                    // Remove from 'reading connections'
-                    conn_list_remove_by_connection(conn_list,conn);
-                    conn->status = CONN_DONE;
-                    ev.data.ptr = conn;
-                    epoll_ctl(epollFD,EPOLL_CTL_DEL,conn->fd,NULL);
-                    close(conn->fd);
-                    connection_free(conn,threadpool); 
                 }
             }
         }
+        conn_list_sweep(conn_list,TIMEOUT_SECONDS,&state,epollFD);
+
     }
     // close everything up:
-    printf("%i active at end\n",threadpool->active_connections);
     close(listenFD);
     close(epollFD);
     epollFD = -1;
-    conn_list_destroy(conn_list);
+    conn_list_destroy(conn_list,&state);
     conn_list=NULL;
-    threadpool_destroy(threadpool);
-    threadpool=NULL;    
+    free(docroot_absolute_path);
+    docroot_absolute_path=NULL;
 
+    return (void*)NULL;
+}
+
+
+int main(int argc, char *argv[]){
+    setvbuf(stdout, NULL, _IOLBF, 0);
+    conduit_args args;
+    parse_argv(argc, argv, &args);
+
+    sigset_t set;
+    int sig;
+
+    // Block SIGINT and SIGTERM so the default actions don't run
+    sigemptyset(&set);
+    sigaddset(&set, SIGINT);
+    sigaddset(&set, SIGTERM);
+    pthread_sigmask(SIG_BLOCK, &set, NULL);
+
+
+    //  create #[args.thread_count] threads
+    pthread_t* threads = calloc(args.thread_count,sizeof(pthread_t));
+    
+    for (int i=0; i < args.thread_count; i++)
+    {
+        pthread_create(&threads[i],NULL,thread_init,(void*)&args);
+    }
+
+
+    // This blocks synchronously until a signal arrives
+    sigwait(&set, &sig); 
+
+    printf("\nSignal %d caught synchronously. Cleaning up threads...\n", sig);
+    ACTIVE = 0;
+    
+    // Now join the threads
+    for (int i = 0; i < args.thread_count; i++) {
+        pthread_join(threads[i], NULL);
+    }
+
+    free(threads);
     exit(0);
 
 

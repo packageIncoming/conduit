@@ -13,28 +13,26 @@
 #include "request.h"
 #include "response.h"
 #include "epoll_handler.h"
-#include "threadpool.h"
 
 void setnonblocking(int fd){
     int flags = fcntl(fd, F_GETFL, 0);
     fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
 
-conn_list_t* conn_list_init(threadpool_t* threadpool){
+conn_list_t* conn_list_init(){
     conn_list_t* conn_list = calloc(1,sizeof(conn_list_t));
     conn_list->conn_count=0;
-    conn_list->threadpool = threadpool;
     conn_list->head = calloc(1,sizeof(conn_node_t));;
     return conn_list;
 }
 
-void conn_list_destroy(conn_list_t* conn_list){
+void conn_list_destroy(conn_list_t* conn_list,thread_state* state){
     conn_node_t* head = conn_list->head;
     conn_node_t* curr = head->nxt;
     free(head);
     while (curr != NULL){
         close(curr->connection->fd);
-        connection_free(curr->connection,conn_list->threadpool);
+        connection_free(curr->connection,state);
         conn_node_t* temp = curr->nxt;
         free(curr);
         curr=temp;
@@ -43,19 +41,20 @@ void conn_list_destroy(conn_list_t* conn_list){
     free(conn_list);
 }
 
-int conn_list_sweep(conn_list_t* conn_list, int timeout){
+int conn_list_sweep(conn_list_t* conn_list, int timeout, thread_state* state, int epoll_fd){
     conn_node_t* curr = conn_list->head->nxt;
     int removeCount=0;
+    time_t curTime = time(NULL);
     while (curr != NULL){
         conn_node_t* temp = curr->nxt;
-        if (time(NULL)-curr->connection->last_active >= timeout){
+        if (curTime-curr->connection->last_active >= timeout){
             // This connection has timed out
-            printf("connection on fd %i disconnected.\n",curr->connection->fd);
             curr->connection->status=CONN_DONE;
             const char* err408 = "HTTP/1.1 408 Request Timeout\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
             write(curr->connection->fd, err408, strlen(err408));
+            epoll_ctl(epoll_fd,EPOLL_CTL_DEL,curr->connection->fd,NULL);
             close(curr->connection->fd);
-            connection_free(curr->connection,conn_list->threadpool);
+            connection_free(curr->connection, state);
             curr->prev->nxt=curr->nxt;
             if (curr->nxt!= NULL){
                 curr->nxt->prev = curr->prev;
@@ -101,30 +100,24 @@ void conn_list_enqueue(conn_list_t* conn_list, conn_node_t* conn_node){
     conn_list->conn_count+=1;
 }
 
-void connection_free(connection_t* connection,threadpool_t* threadpool){
+void connection_free(connection_t* connection,thread_state* state){
     free(connection->write_buffer);
     free(connection->request);
     response_clean(connection->response);
     free(connection->response);
     free(connection);
-    pthread_mutex_lock(&threadpool->mutex);
-    threadpool->active_connections-=1;
-    pthread_mutex_unlock(&threadpool->mutex);
-
+    state->active_connections-=1;
 }
 
-void add_new_connections(int epollFD, int listenFD,threadpool_t* threadpool,conn_list_t* conn_list){
+void add_new_connections(int epollFD, int listenFD,thread_state* state,conn_list_t* conn_list){
     while (1){
         int clientFD = accept(listenFD,NULL,NULL);
 
         if (clientFD == -1){
             break; // no more connections AND/OR blocking
         }
-        setnonblocking(clientFD);
         // If we are already at our connection limit then just send a 503 error to them
-        pthread_mutex_lock(&threadpool->mutex);
-        if (threadpool->active_connections >= MAX_CONNECTIONS) {
-            pthread_mutex_unlock(&threadpool->mutex);
+        if (state->active_connections >= state->max_connections) {
             
             // 2. Dump a raw 503 string directly to the socket and close it. 
             // No malloc, no struct initialization, no parsing.
@@ -134,8 +127,8 @@ void add_new_connections(int epollFD, int listenFD,threadpool_t* threadpool,conn
             continue; // Move to the next pending connection
         }
         // Otherwise increment the active_connections
-        threadpool->active_connections+=1;
-        pthread_mutex_unlock(&threadpool->mutex);
+        state->active_connections+=1;
+        setnonblocking(clientFD);
         // construct connection_t object
         connection_t* conn = malloc(sizeof(connection_t));
         memset(conn,0,sizeof(*conn));
@@ -160,17 +153,13 @@ void add_new_connections(int epollFD, int listenFD,threadpool_t* threadpool,conn
         if(epoll_ctl(epollFD,EPOLL_CTL_ADD,clientFD,&ev) == -1){
             perror("epoll_ctl, add_new_connections");
             close(clientFD);
-            connection_free(conn,threadpool);
+            connection_free(conn,state);
             return;
         } 
-
         // now create conn_node_t struct to add to conn_list:
         conn_node_t* conn_node = calloc(1,sizeof(conn_node_t));
         conn_node->connection = conn;
         conn_list_enqueue(conn_list,conn_node);
-
-        
-
 
     }    
 }
@@ -211,7 +200,7 @@ int _connection_read_to_buffer(int fd, connection_t* conn){
         return 0;
     } else {
         // found CRLF
-        return 1;
+    return 1;
     }
 }
 
@@ -248,9 +237,7 @@ int _connection_populate_request(connection_t* conn){
     return 0; 
 }
 
-
-
-int connection_on_epollin(int fd,connection_t* conn,const char* docroot){
+int connection_on_epollin(int fd,connection_t* conn,const char* docroot, const char* docroot_absolute_path){
 
     if (conn->status!= CONN_READING) {
         fprintf(stderr,"WARNING: TRYING TO READ FROM CONNECTION WITH STATUS != CONN_READING\n");
@@ -287,7 +274,7 @@ int connection_on_epollin(int fd,connection_t* conn,const char* docroot){
             }else {
                 // Request is structurally valid and a GET, begin making response
                 // first construct the actual http_response_t object
-                _connection_construct_response(conn,docroot);
+                _connection_construct_response(conn,docroot, docroot_absolute_path);
             }
         }
         // then serialize it into the write_buffer body
@@ -299,13 +286,14 @@ int connection_on_epollin(int fd,connection_t* conn,const char* docroot){
 // --------------------- EPOLLOUT-BASED METHODS --------------------- //
 
 
-void _connection_construct_response(connection_t* conn, const char* docroot){
+void _connection_construct_response(connection_t* conn, const char* docroot, const char* docroot_absolute_path){
     // Now begin to construct GET response
     // 1. Construct raw path
     memset(conn->response,0,sizeof(*conn->response));
     int filepath_size=1024;
     char filepath[filepath_size];
     memset(&filepath,0,filepath_size);
+    
     if(construct_filepath(docroot,conn->request->path,filepath,filepath_size) == 1){
         // Error occurred while constructing filepath
         response_fill_as_error(conn->response,404,REASON_NOT_FOUND);
@@ -313,7 +301,7 @@ void _connection_construct_response(connection_t* conn, const char* docroot){
     }
     
     // 2. Verify the raw path starts with the docroot
-    if (verify_path_starts_with_docroot(docroot,filepath) == 1){
+    if (verify_path_starts_with_docroot(docroot_absolute_path,filepath) == 1){
         response_fill_as_error(conn->response,403,REASON_FORBIDDEN);
         return;
     }
@@ -444,4 +432,4 @@ int connection_on_epollout(int fd,connection_t* conn){
     }
 
     return _connection_write_to_client(fd,conn);
-}
+}   

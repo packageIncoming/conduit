@@ -2,7 +2,7 @@ CC = gcc
 FLAGS = -g -Wall -Wextra -Werror -pedantic -std=c11 -pthread
 DEPFLAGS = -MMD -MP
 
-OBJS = conduit.o dochandler.o response.o request.o epoll_handler.o threadpool.o
+OBJS = conduit.o dochandler.o response.o request.o epoll_handler.o args.o
 
 conduit: $(OBJS)
 	$(CC) $(FLAGS) $(OBJS) -o conduit
