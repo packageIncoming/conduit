@@ -24,4 +24,8 @@ typedef struct {
 // Returns 0 if a valid request, 1 if invalid
 int request_populate_from_fd(int clientFD, http_request_t* http_request);
 
+//  Tries to find the first haeder (in http_request_t.headers) whose key matches target
+//  returns nullptr if not found or a ptr to the start of the value if found.
+const char* get_header(http_request_t* request,const char* target);   
+
 #endif

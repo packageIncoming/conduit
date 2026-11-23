@@ -1,5 +1,5 @@
 CC = gcc
-FLAGS = -g -Wall -Wextra -Werror -pedantic -std=c11 -pthread
+FLAGS = -g -Wall -Wextra -Werror -pedantic -std=c11 -pthread -O2
 DEPFLAGS = -MMD -MP
 
 OBJS = conduit.o dochandler.o response.o request.o epoll_handler.o args.o

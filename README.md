@@ -72,7 +72,7 @@ accept ─► conn_list (CONN_READING) ─► EPOLLIN events read into buffer
             │                                    │
             │ (10s idle sweep)                   ▼
             ▼                          headers complete (\r\n\r\n)
-         408 + close (CONN_DONE)                 │
+   408 or silent close (CONN_DONE)               │
                                                  ▼
                                        parse + validate + build
                                                  │
@@ -81,8 +81,12 @@ accept ─► conn_list (CONN_READING) ─► EPOLLIN events read into buffer
                                         │              │
                               complete  │              │  partial
                                         ▼              ▼
-                            close (CONN_DONE)   rearm EPOLLOUT,
-                                                finish on next event
+                              keep-alive?       rearm EPOLLOUT,
+                               │      │         finish on next event
+                           no  │      │  yes
+                               ▼      ▼
+                close (CONN_DONE)   reset, serve any buffered request,
+                                    then back to CONN_READING
 ```
 
 ---
@@ -119,6 +123,36 @@ Send `SIGINT` (Ctrl+C) or `SIGTERM` for graceful shutdown.
 ---
 
 ## Benchmarks
+
+### Keep-alive
+
+Measured with `wrk` directly, not `bench.sh`. Same machine as the sweeps below, loopback, client co-resident.
+
+| | |
+|---|---|
+| Server | `./conduit -t 4 -c 256 8080 docroot` |
+| Client | `wrk -t4 -c100 -d10s --latency` |
+| File | `index.html`, static |
+| Close arm | same binary, `wrk -H "Connection: close"` |
+
+| Stage | req/s | p50 | p99 | Runs |
+|---|---|---|---|---|
+| Connection per request (`Connection: close`) | 45,649 | 1.00 ms | 8.45 ms | 1 |
+| Keep-alive | 118,214 | 824 µs | 1.25 ms | 3 (117,211 / 118,214 / 120,084) |
+| + request/response structs reset instead of zeroed | 123,572 | 727 µs | 1.84 ms | 1 |
+| + `-O2` | 124,793 | 797 µs | 1.02 ms | 2 (124,602 / 124,983) |
+
+Socket errors and non-2xx responses were 0 in every run.
+
+Keep-alive against connection-per-request on the same build is **2.6x throughput** (45,649 -> 117,211) and **6.8x lower p99** (8.45 ms -> 1.25 ms). The close arm was not re-measured after the last two stages.
+
+Connection reuse was checked with `nstat TcpPassiveOpens`: a 10 s, 100-connection keep-alive run opened 101 connections.
+
+With keep-alive on, all four server threads sit at 98-100% CPU, so the server is the limiter at this load, not `wrk`. `perf top` on the keep-alive build showed no single hot spot. Syscall entry and exit overhead was about 19% of samples, `memset` of the request and response structs was 7.3%, and AppArmor permission checks on file and socket calls were about 5%. Removing the `memset` gave about 4.5%. `-O2` gave about 1%, which fits a profile where most of the time is in the kernel and libc.
+
+### Connection-per-request sweeps
+
+Everything from here to the end of the Benchmarks section was measured before keep-alive existed, so every request pays for a TCP handshake and teardown. These tables have not been re-run.
 
 Measured with `bench.sh`, which sweeps server and client configurations and reports medians with a per-row noise floor.
 
@@ -163,7 +197,7 @@ Server pinned at `-t 8 -c 100`, `wrk` threads swept, to check whether the load g
 | 4 | 46,272 | 48,803 |
 | 8 | 51,555 | 49,059 |
 
-### Headline
+### Headline (connection per request)
 
 | | |
 |---|---|
@@ -198,6 +232,8 @@ Rows where the cap is firing report high throughput because the 503 path perform
 
 `bench.sh -h` documents the client sweep, server sweep, CSV output, and an optional `-N` mode that runs the server in a network namespace behind a veth pair instead of loopback.
 
+`wrk` uses keep-alive by default, so this command now measures the keep-alive path. To measure connection-per-request on the current binary, run `wrk` with `-H "Connection: close"`.
+
 ### Benchmark history
 
 The v1 README reported 2,839 req/s at 1.50 ms p50. That figure was measured under WSL2, on a different concurrency model, before the thread pool was replaced. It is not comparable to anything in the table above and should be disregarded.
@@ -214,7 +250,7 @@ The v1 README reported 2,839 req/s at 1.50 ms p50. That figure was measured unde
 
 **Response body ownership by pointer + flag, not embedded buffer.** The `http_response_t` struct holds a `const char*` to the body and an `owns_body_flag` indicating whether to free it on cleanup. This avoids copying file contents into the struct & the struct behaves as metadata around an externally-allocated buffer.
 
-**Per-connection linked list for idle-timeout tracking.** Each thread maintains a linked list of `CONN_READING` connections and sweeps it once per event loop iteration, evicting any connection idle for more than 10 seconds with a 408. This defends against slowloris-style attacks alongside the connection limit.
+**Per-connection linked list for idle-timeout tracking.** Each thread maintains a linked list of `CONN_READING` connections and sweeps it once per event loop iteration, evicting any connection idle for more than 10 seconds. A connection that stalled partway through a request gets a 408. A keep-alive connection sitting idle between requests is closed without one. This defends against slowloris-style attacks alongside the connection limit.
 
 **The sweep runs after the event batch, not before it.** `epoll_wait` fills `events[]` before the sweep runs. Sweeping first can free a connection that still has a pending entry in that batch, leaving `events[i].data.ptr` dangling. This produced a use-after-free that only appeared under sustained load long enough for connections to reach the idle threshold while a batch was in flight. It was confirmed by lowering `TIMEOUT_SECONDS` to 1, which reproduced it within seconds, and the fix verified against 3× the reproducing load.
 
@@ -234,10 +270,9 @@ The v1 README reported 2,839 req/s at 1.50 ms p50. That figure was measured unde
 
 These are scoping decisions, not bugs.
 
-- **No HTTP keep-alive.** Every request opens and closes a fresh TCP connection. This is the single largest performance ceiling since TCP handshake and teardown dominate the per-request cost for small files. A keep-alive implementation would likely produce a 5–10x throughput improvement.
-- **Per-request `malloc` churn.** Each connection allocates a `connection_t`, an `http_request_t`, an `http_response_t`, a read buffer, and (on success) a write buffer plus the file contents. A pool allocator (or slab allocator) for the per-request structs would replace the three malloc/free pairs per connection with O(1) free-list operations and improve cache locality.
+- **Per-request `malloc` churn.** Each connection allocates a `connection_t`, an `http_request_t`, and an `http_response_t` once, and each request on it allocates a write buffer plus the file contents. A pool allocator (or slab allocator) would replace these malloc/free pairs with O(1) free-list operations and improve cache locality.
 - **`realpath()` on every request.** The docroot is resolved once at thread startup, but the request path is still resolved per request, and `realpath` stats every component of the path.
-- **No static file cache.** Every request opens, stats, reads, and closes the target file, and mallocs a buffer for its contents, even for a file that has not changed across hundreds of thousands of requests.
+- **No static file cache.** Every request opens, stats, reads, and closes the target file, and mallocs a buffer for its contents, even for a file that has not changed across hundreds of thousands of requests. With keep-alive in place this is the largest remaining cost.
 - **Static files only, no dynamic content.** No CGI, no reverse proxy, no application handlers. Suitable for serving HTML/CSS/JS/images; not a general-purpose server.
 - **Loopback benchmarks, with the client on the same machine.** Numbers reflect server-side processing capacity with the load generator competing for the same 4 physical cores. Throughput on a real LAN/WAN will be lower, and latency will be higher. `bench.sh -N` runs the server behind a veth pair, which removes the loopback shortcut but not the co-location.
 - **No HTTPS.** Implementing TLS would require integrating a crypto library (OpenSSL or BoringSSL), loading server certificates from disk, and handling the TLS handshake on each connection. Significant work and a different problem domain than what Conduit was built to explore.
@@ -249,13 +284,12 @@ These are scoping decisions, not bugs.
 
 If extending Conduit beyond its current scope, the priority order would be:
 
-1. **HTTP keep-alive.** The single largest throughput boost. Requires per-connection state machines for sequential request handling and pipelining, and preserving buffered bytes across requests so a pipelined second request is not discarded.
-2. **Static file cache.** Removes the open/stat/read/close and the per-request malloc of file contents for hot files.
-3. **Cache or eliminate the per-request `realpath()`.**
-4. **Slab allocator for connection structs.** Eliminates per-request malloc, improves locality, reduces fragmentation under sustained load.
-5. **`writev(2)` for the response.** Sends the header buffer and the body in one syscall without concatenating them into a single allocation first.
-6. **`sendfile(2)` above a size threshold.** Avoids reading arbitrarily large files fully into memory per request. The crossover point against the in-process cache would have to be measured.
-7. **Measure off-box.** Every number in this README has the load generator on the same 4 cores as the server.
+1. **Static file cache.** Removes the open/stat/read/close and the per-request malloc of file contents for hot files.
+2. **Cache or eliminate the per-request `realpath()`.**
+3. **Slab allocator for connection structs.** Eliminates per-request malloc, improves locality, reduces fragmentation under sustained load.
+4. **`writev(2)` for the response.** Sends the header buffer and the body in one syscall without concatenating them into a single allocation first.
+5. **`sendfile(2)` above a size threshold.** Avoids reading arbitrarily large files fully into memory per request. The crossover point against the in-process cache would have to be measured.
+6. **Measure off-box.** Every number in this README has the load generator on the same 4 cores as the server.
 
 These are understood and deferred, not pending TODOs.
 
@@ -277,8 +311,19 @@ wrk -t8 -c50 -d10s --latency http://localhost:8080/index.html
 
 ---
 
-## Honest Framing
+## Changelog
 
-This is a learning project. It was built to a defined curriculum across eight milestones (TRD-00 through TRD-07). It is not production software. It does not compete with nginx, Apache, or any other established servers that have decades of optimization, security hardening, and ecosystem integration. Conduit's purpose is to demonstrate that I understand what those servers do at the systems-call level, and to provide a substrate for talking about epoll, non-blocking I/O, signal handling, concurrency design, memory safety, and the trade-offs in each.
+### 2026-11-23: HTTP keep-alive
 
-If you're reviewing this for a systems or infrastructure engineering role: the design decisions and known limitations sections above are the parts of the README I most want you to read. The benchmark numbers are evidence; the analysis of *why* those numbers look the way they do is the actual signal.
+Keep-alive was item 1 on the "What I'd Do Next" list. The earlier README guessed it would be worth 5-10x. Measured, it is 2.6x throughput and 6.8x lower p99.
+
+- Added a per-request `keep_alive` flag. It is set unless the request sends `Connection: close`, and the response's `Connection` header follows it.
+- Added `connection_reset`. After a fully written response on a keep-alive connection, the connection goes back to `CONN_READING` and is reused. Failed writes and error paths still close.
+- Added pipelining support. The end of each request is recorded as `req_end`, leftover bytes are moved to the front of the read buffer on reset, and `connection_serve_buffered` serves any complete request already in the buffer without waiting for another epoll event.
+- A client that closes with no request pending (`read() == 0`) is now closed right away. Before, it waited for the idle sweep.
+- The idle sweep closes an idle keep-alive connection silently and keeps the 408 for a request that stalled partway.
+- Replaced the per-request `memset` of the request and response structs (about 75 KB) with field resets.
+- The Makefile now builds with `-O2`. Removed the unused `response_send`.
+- Fixed `get_header` returning the header's key instead of its value, which made every request look like keep-alive. It showed up as both `wrk` arms reporting the same bytes per response.
+
+---

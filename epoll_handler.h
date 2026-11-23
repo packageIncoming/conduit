@@ -19,6 +19,9 @@ typedef struct {
     size_t wb_size;
     int wb_offset;
     int rb_offset;
+    int keep_alive;
+    int req_end;    //  end of the current request
+    int leftover;   //  the remaining bytes after the current request
     time_t last_active;
     http_request_t* request;
     http_response_t* response;
@@ -102,5 +105,19 @@ int _connection_write_to_client(int fd, connection_t* conn);
 // Handles EPOLLOUT ET event. Returns 1 if done (fully sent message), 
 // 0 if not done (parts still remain, wb_offset<wb_size), -1 on error
 int connection_on_epollout(int fd,connection_t* conn);
+
+// Returns a connection to its just-accepted state
+void connection_reset(connection_t* conn);
+
+//  Returns ptr to first crlf
+char* find_crlf(connection_t* conn);
+
+void connection_process_request(connection_t* conn, const char* docroot, const char* docroot_absolute_path);
+
+// 0 = nothing buffered, wait on epoll
+// 1 = partial write, needs EPOLLOUT
+// -1 = close the connection
+int connection_serve_buffered(connection_t* conn, const char* docroot, const char* docroot_absolute_path);
+
 
 #endif 

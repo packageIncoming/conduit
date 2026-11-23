@@ -1,9 +1,11 @@
 #include "request.h"
+#include "response.h"
 #include <sys/types.h>
 #include <stddef.h>
 #include <string.h>
 #include <stdio.h>
 #include <unistd.h>
+#include <strings.h>
 
 const char* const CRLF= "\r\n"; // every line ends in \r\n
 
@@ -70,4 +72,19 @@ int request_populate_from_fd(int clientFD, http_request_t* http_request){
         } 
 
         return 0;
+}
+
+const char* get_header(http_request_t* request, const char* target)
+{
+    
+    for(int i =0; i< request->header_count; ++i)
+    {
+        if (strncasecmp(target, request->headers[i].key, HEADER_KEY_SIZE) == 0)
+        {
+            //  match
+            return (const char*)(request->headers[i].value);
+        }
+    }
+
+    return NULL;
 }

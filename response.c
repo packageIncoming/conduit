@@ -44,45 +44,6 @@ void response_clean(http_response_t *resp){
     }
 }
 
-// DEPRECATED
-int response_send(int fd, http_response_t *resp){
-    // calculate response size
-    int response_size = resp->body_size + strlen(resp->reason_phrase) + HEADER_LINE_BYTES*resp->header_count + 18;
-    char final_response[response_size];
-    int written_bytes=0;
-
-    // create first line
-    written_bytes+= sprintf(final_response,"HTTP/1.1 %i %s\r\n",resp->status_code,resp->reason_phrase);
-
-    // add headers
-    for(int i = 0; i < resp->header_count;i++){
-        written_bytes+= sprintf(
-            final_response+written_bytes,
-            "%s: %s\r\n",
-            resp->headers[i].key,
-            resp->headers[i].value
-        );
-    }
-
-    // add Content-Length header (generated based on body)
-    written_bytes+= sprintf(
-        final_response+written_bytes,
-        "Content-Length: %li\r\n",
-        resp->body_size
-    );
-
-    // add \r\n before body
-    written_bytes+= sprintf(final_response+written_bytes,"\r\n");
-
-    // add body
-    written_bytes+=snprintf(final_response+written_bytes,resp->body_size+1,"%s",resp->body);
-    // add nullbyte
-    final_response[written_bytes]='\0';
-    // write to fd
-    write(fd, final_response, strlen(final_response));
-    return 0;
-}
-
 void response_fill_as_error(http_response_t *resp, int error_code, const char* reason){
     response_add_header(resp,"Content-Type",TEXT);
     response_add_header(resp,"Connection","close");

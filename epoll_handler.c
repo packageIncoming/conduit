@@ -1,5 +1,6 @@
 #include <fcntl.h>
 #include <stdlib.h>
+#include <strings.h>
 #include <sys/socket.h>
 #include <string.h>
 #include <sys/epoll.h>
@@ -50,8 +51,12 @@ int conn_list_sweep(conn_list_t* conn_list, int timeout, thread_state* state, in
         if (curTime-curr->connection->last_active >= timeout){
             // This connection has timed out
             curr->connection->status=CONN_DONE;
-            const char* err408 = "HTTP/1.1 408 Request Timeout\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
-            write(curr->connection->fd, err408, strlen(err408));
+            if (curr->connection->rb_offset > 0)
+            {
+                const char* err408 = "HTTP/1.1 408 Request Timeout\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
+                ssize_t n = write(curr->connection->fd, err408, strlen(err408));
+                (void)n;
+            }
             epoll_ctl(epoll_fd,EPOLL_CTL_DEL,curr->connection->fd,NULL);
             close(curr->connection->fd);
             connection_free(curr->connection, state);
@@ -122,7 +127,8 @@ void add_new_connections(int epollFD, int listenFD,thread_state* state,conn_list
             // 2. Dump a raw 503 string directly to the socket and close it. 
             // No malloc, no struct initialization, no parsing.
             const char* err503 = "HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
-            write(clientFD, err503, strlen(err503));
+            ssize_t n = write(clientFD, err503, strlen(err503));
+            (void)n;
             close(clientFD);
             continue; // Move to the next pending connection
         }
@@ -131,17 +137,25 @@ void add_new_connections(int epollFD, int listenFD,thread_state* state,conn_list
         setnonblocking(clientFD);
         // construct connection_t object
         connection_t* conn = malloc(sizeof(connection_t));
+        conn->req_end = 0;
+        conn->leftover = 0;
         memset(conn,0,sizeof(*conn));
         conn->fd=clientFD;
         conn->status=CONN_READING;
         conn->wb_offset=0;
+        conn->keep_alive = 0;   //  keep-alive off by default until parsed
         http_request_t* request = malloc(sizeof(http_request_t));
+        
         http_response_t* response = malloc(sizeof(http_response_t));
         conn->last_active = time(NULL);
-        memset(request,0,sizeof(*request));
-        memset(response,0,sizeof(*response));
-        conn->request=request;
         conn->response=response;
+        conn->request=request;
+        
+        request->method[0] = '\0';
+        request->path[0] = '\0';
+        request->version[0] = '\0';
+        request->header_count = 0;
+        response->header_count = 0;
         response->owns_body_flag=0;
 
 
@@ -167,8 +181,21 @@ void add_new_connections(int epollFD, int listenFD,thread_state* state,conn_list
 
 // --------------------- EPOLLIN-BASED METHODS --------------------- //
 
+char* find_crlf(connection_t* conn)
+{
+    char* crlf =strstr(conn->read_buffer, "\r\n\r\n");
+    // found CRLF
+    if (crlf!= NULL)
+    {
+        conn->req_end = (int)(crlf+4 - conn->read_buffer);
+        conn->leftover = conn->rb_offset- conn->req_end;
+    }
+    return crlf;
+}
+
 int _connection_read_to_buffer(int fd, connection_t* conn){
     // read from the client
+    ssize_t read_byte_count;
     while (1){
         size_t remaining = READBUFFER_SIZE - conn->rb_offset - 1;
         if (remaining == 0){
@@ -176,7 +203,7 @@ int _connection_read_to_buffer(int fd, connection_t* conn){
             while (read(fd, trash_buffer, sizeof(trash_buffer)) > 0);
             return -1;
         }
-        ssize_t read_byte_count = read(fd,&(conn->read_buffer[conn->rb_offset]),remaining); // read 256 bytes from clientFD into the buff
+        read_byte_count = read(fd,&(conn->read_buffer[conn->rb_offset]),remaining); // read 256 bytes from clientFD into the buff
         time(&conn->last_active);
         if (read_byte_count == -1){
             if( errno == EAGAIN){ break;}
@@ -192,15 +219,24 @@ int _connection_read_to_buffer(int fd, connection_t* conn){
     if (conn->rb_offset == READBUFFER_SIZE-1 ){
         return -1; // Too large of a request
     }
-    char *first_crlf = strstr(conn->read_buffer, "\r\n\r\n");
     
+    char* crlf = find_crlf(conn);
 
-    if (first_crlf == NULL){
-        // We have not yet finished reading, return 0
-        return 0;
+    if (crlf== NULL){
+        //crlf not found
+        if (read_byte_count == 0 )
+        {
+            //  Not a full request & the client has shut down
+            return 2;
+        }
+        else
+        {
+            // We have not yet finished reading, return 0
+            return 0;
+        }
     } else {
-        // found CRLF
-    return 1;
+
+        return 1;
     }
 }
 
@@ -237,6 +273,38 @@ int _connection_populate_request(connection_t* conn){
     return 0; 
 }
 
+void connection_process_request(connection_t* conn, const char* docroot, const char* docroot_absolute_path)
+{
+    if(_connection_populate_request(conn) == 1){
+        // malformed, create the response as an error response
+        response_fill_as_error(conn->response,400,REASON_BAD_REQUEST);
+    } else {
+        // maybe not malformed? Go through checks 
+        if (strcmp(conn->request->method,"GET")!=0 ){
+            // Non-GET -> 405
+            response_fill_as_error(conn->response,405,REASON_METHOD_NOT_ALLOWED);
+        } else if ( strcmp(conn->request->version,"HTTP/1.1")!=0){
+            response_fill_as_error(conn->response,400,REASON_BAD_REQUEST);
+        }else {
+            // Request is structurally valid and a GET, begin making response
+            // first construct the actual http_response_t object
+            //  check if the request wants keep-alive off.
+            const char* connection_header = get_header(conn->request, "Connection");
+            if (connection_header != NULL && (strncasecmp(connection_header, "close", HEADER_VALUE_SIZE)) == 0)
+            {
+                conn->keep_alive = 0;
+            }
+            else 
+            {
+                conn->keep_alive = 1;
+            }
+            _connection_construct_response(conn,docroot, docroot_absolute_path);
+        }
+    }
+    // then serialize it into the write_buffer body
+    _connection_serialize_response(conn);
+}
+
 int connection_on_epollin(int fd,connection_t* conn,const char* docroot, const char* docroot_absolute_path){
 
     if (conn->status!= CONN_READING) {
@@ -247,7 +315,13 @@ int connection_on_epollin(int fd,connection_t* conn,const char* docroot, const c
     if(result== 0){
         // did not find \r\n\r\n
         return 0;
-    } else if (result == -1){
+    }
+    else if (result == 2)
+    {
+        //  Client closed without sending a full request so we just clean up, do nothing here though
+        return -1;
+    } 
+    else if (result == -1){
         if (conn->rb_offset >= READBUFFER_SIZE-1){
             // Too big of a request, construct response and send
             response_fill_as_error(conn->response,400,REASON_BAD_REQUEST);
@@ -258,27 +332,12 @@ int connection_on_epollin(int fd,connection_t* conn,const char* docroot, const c
             response_fill_as_error(conn->response,500,REASON_INTERNAL_SERVER_ERROR);
         }
         return 1; 
-    } else{
+    } 
+    else
+    {
         // did find \r\n\r\n implies reading is done
         // create http_request_t struct
-        if(_connection_populate_request(conn) == 1){
-            // malformed, create the response as an error response
-            response_fill_as_error(conn->response,400,REASON_BAD_REQUEST);
-        } else {
-            // maybe not malformed? Go through checks 
-            if (strcmp(conn->request->method,"GET")!=0 ){
-                // Non-GET -> 405
-                response_fill_as_error(conn->response,405,REASON_METHOD_NOT_ALLOWED);
-            } else if ( strcmp(conn->request->version,"HTTP/1.1")!=0){
-                response_fill_as_error(conn->response,400,REASON_BAD_REQUEST);
-            }else {
-                // Request is structurally valid and a GET, begin making response
-                // first construct the actual http_response_t object
-                _connection_construct_response(conn,docroot, docroot_absolute_path);
-            }
-        }
-        // then serialize it into the write_buffer body
-        _connection_serialize_response(conn);
+        connection_process_request(conn, docroot, docroot_absolute_path);
         return 1;
     }
 }
@@ -289,7 +348,7 @@ int connection_on_epollin(int fd,connection_t* conn,const char* docroot, const c
 void _connection_construct_response(connection_t* conn, const char* docroot, const char* docroot_absolute_path){
     // Now begin to construct GET response
     // 1. Construct raw path
-    memset(conn->response,0,sizeof(*conn->response));
+
     int filepath_size=1024;
     char filepath[filepath_size];
     memset(&filepath,0,filepath_size);
@@ -350,7 +409,14 @@ void _connection_construct_response(connection_t* conn, const char* docroot, con
 
     // Construct the final, successful response
     response_add_header(conn->response,"Content-Type",mimetype);
-    response_add_header(conn->response,"Connection","close");
+    if (conn->keep_alive)
+    {
+        response_add_header(conn->response,"Connection","keep-alive");
+    }
+    else
+    {
+        response_add_header(conn->response,"Connection","close");
+    }
     response_set_status(conn->response,200,REASON_OK);
     // Set ownership so that file_contents_buffer gets free'd properly.
     response_set_body(conn->response,file_contents_buffer,filesize,1);
@@ -433,3 +499,55 @@ int connection_on_epollout(int fd,connection_t* conn){
 
     return _connection_write_to_client(fd,conn);
 }   
+
+
+
+void connection_reset(connection_t *conn)
+{
+    //  move what remains down in the read buffer 
+    memmove(conn->read_buffer, conn->read_buffer+conn->req_end, conn->leftover);
+    conn->rb_offset = conn->leftover;
+    conn->read_buffer[conn->rb_offset] = '\0';
+
+    free(conn->write_buffer);
+    conn->write_buffer = NULL;
+    response_clean(conn->response);
+    conn->request->method[0] = '\0';
+    conn->request->path[0] = '\0';
+    conn->request->version[0] = '\0';
+    conn->request->header_count = 0;
+    conn->response->header_count = 0;
+    conn->response->owns_body_flag=0;
+    conn->wb_offset = 0;
+    conn->wb_size = 0;
+    conn->status = CONN_READING;
+    conn->last_active = time(NULL);
+    conn->keep_alive = 0;
+    conn->req_end = 0;
+    conn->leftover = 0;
+    
+
+    //  keep bytes that come after the read 
+}
+
+// 0 = nothing buffered, wait on epoll
+// 1 = partial write, needs EPOLLOUT
+// -1 = close the connection
+int connection_serve_buffered(connection_t* conn, const char* docroot, const char* docroot_absolute_path)
+{
+    while (1){
+        connection_reset(conn);
+        if (find_crlf(conn) == NULL){
+            return 0;
+        }
+        connection_process_request(conn, docroot, docroot_absolute_path);
+        conn->status = CONN_WRITING;
+        int w = connection_on_epollout(conn->fd, conn);
+        if (w == 0){
+            return 1;
+        }
+        if (w < 0 || !conn->keep_alive){
+            return -1;
+        }
+    }
+}

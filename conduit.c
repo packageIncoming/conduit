@@ -155,11 +155,33 @@ void* thread_init(void* _args)
                     int w = connection_on_epollout(conn->fd,conn);
                     if (w == 1){
                         // done writing, so close up this socket
-                        conn_list_remove_by_connection(conn_list,conn);
-                        conn->status = CONN_DONE;
-                        epoll_ctl(epollFD,EPOLL_CTL_DEL,conn->fd,NULL);
-                        close(conn->fd);
-                        connection_free(conn, &state);
+                        if (!conn->keep_alive)
+                        {
+                            conn_list_remove_by_connection(conn_list,conn);
+                            conn->status = CONN_DONE;
+                            epoll_ctl(epollFD,EPOLL_CTL_DEL,conn->fd,NULL);
+                            close(conn->fd);
+                            connection_free(conn, &state);
+                        }
+                        else
+                        {
+                            int r = connection_serve_buffered(conn, docroot, docroot_absolute_path);
+                            if (r == 0){
+                                struct epoll_event ev_in;
+                                ev_in.data.ptr = conn;
+                                ev_in.events = EPOLLIN | EPOLLET;
+                                if (epoll_ctl(epollFD, EPOLL_CTL_MOD, conn->fd, &ev_in) == -1){
+                                    perror("epoll_ctl: rearm for EPOLLIN on keep-alive");
+                                }
+                            } else if (r == -1){
+                                conn_list_remove_by_connection(conn_list,conn);
+                                conn->status = CONN_DONE;
+                                epoll_ctl(epollFD,EPOLL_CTL_DEL,conn->fd,NULL);
+                                close(conn->fd);
+                                connection_free(conn, &state);
+                            }
+                            // r == 1: partial write, already armed for EPOLLOUT
+                        }
                     } else if (w < 0){
                         // Write failed outright
                         conn_list_remove_by_connection(conn_list,conn);
@@ -183,14 +205,36 @@ void* thread_init(void* _args)
                         // finishes, otherwise a partial write orphans the conn
                         conn->status=CONN_WRITING;
                         if (connection_on_epollout(conn->fd,conn) == 1){
-                            //  done writing too, so close up this socket
-                            conn_list_remove_by_connection(conn_list,conn);
-                            conn->status = CONN_DONE;
-                            if (epoll_ctl(epollFD,EPOLL_CTL_DEL,conn->fd,NULL) == -1){
-                                perror("epoll_ctl: request parse done");
+                            //  depending on if this connection has keep-alive either remove or reset
+                            if (!conn->keep_alive)
+                            {
+                                conn_list_remove_by_connection(conn_list,conn);
+                                conn->status = CONN_DONE;
+                                if (epoll_ctl(epollFD,EPOLL_CTL_DEL,conn->fd,NULL) == -1){
+                                    perror("epoll_ctl: request parse done");
+                                }
+                                close(conn->fd);
+                                connection_free(conn, &state);
                             }
-                            close(conn->fd);
-                            connection_free(conn, &state);
+                            else
+                            {
+                                int r = connection_serve_buffered(conn, docroot, docroot_absolute_path);
+                                if (r == 1){
+                                    struct epoll_event ev_out;
+                                    ev_out.data.ptr = conn;
+                                    ev_out.events = EPOLLOUT | EPOLLET;
+                                    if (epoll_ctl(epollFD, EPOLL_CTL_MOD, conn->fd, &ev_out) == -1){
+                                        perror("epoll_ctl: rearm for EPOLLOUT");
+                                    }
+                                } else if (r == -1){
+                                    conn_list_remove_by_connection(conn_list,conn);
+                                    conn->status = CONN_DONE;
+                                    epoll_ctl(epollFD,EPOLL_CTL_DEL,conn->fd,NULL);
+                                    close(conn->fd);
+                                    connection_free(conn, &state);
+                                }
+                            }
+
                         } else {
                             //  We didn't finish writing, so switch this fd over
                             //  to watching for writability and finish later
